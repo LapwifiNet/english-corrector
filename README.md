@@ -1,80 +1,125 @@
 # English Corrector
 
-A near real-time English grammar-correcting virtual microphone for online meetings.
+A macOS Intel-first prototype for a real-time English grammar-correcting virtual microphone.
 
-The first target is macOS on Intel. The initial milestone proves that an Electron app can route deterministic audio into BlackHole 2ch so Zoom, Google Meet, or Discord can receive it as a microphone.
+## Current status
 
-## Current scope
+| Area | Status |
+| --- | --- |
+| Epic 0: Audio routing spike | Manually verified on macOS Intel with BlackHole 2ch |
+| Epic 1: Text to virtual microphone | In progress: deterministic streaming PCM diagnostic is implemented |
+| Natural streaming TTS provider | Not integrated yet |
+| Speech-to-text and correction | Not started |
 
-This repository currently contains the Epic 0 desktop shell:
+The current Epic 1 slice proves the provider-neutral streaming path before any paid or networked TTS provider is connected.
 
-- Electron main process with context isolation and sandboxing
-- React and TypeScript renderer
-- macOS microphone permission bridge
-- Audio input and output device discovery
-- Explicit physical input and virtual output selection
-- Deterministic in-memory WAV fixture with three tones
-- Selected-output playback with Stop and cleanup
-- Feedback-loop warning based on audio device groups
-- Node test runner coverage for device rules and the WAV fixture
+## What the app can do now
 
-STT, grammar correction, TTS, voice cloning, and direct microphone passthrough are intentionally not included yet.
+- Request macOS microphone permission through Electron.
+- Discover physical input and output devices.
+- Keep the known-good three-tone BlackHole routing fixture.
+- Accept up to 280 characters of English text.
+- Convert that text into deterministic speech-like PCM chunks through a fake TTS adapter.
+- Reorder chunks, suppress duplicates, apply a bounded high-water buffer, and normalize audio to 48 kHz stereo Float32.
+- Stream the result exactly once into the selected virtual output.
+- Cancel synthesis, buffering, and playback with one action.
+- Show first-chunk, first-audio, and total latency metrics.
 
-## Signal path
-
-```text
-Physical microphone
-  -> English Corrector
-  -> Speech-to-text
-  -> Constrained correction
-  -> Text-to-speech
-  -> BlackHole 2ch
-  -> Zoom / Google Meet / Discord
-```
-
-Epic 0 only implements device setup and fixture playback. Raw microphone audio is not routed to the meeting app.
+> The fake adapter does not produce intelligible natural speech. It exists to make ordering, buffering, playback, error, and cancellation behavior reproducible. A production streaming TTS adapter is the next milestone.
 
 ## Requirements
 
-- macOS Intel for the first hardware validation
-- Node.js 22 or newer
-- BlackHole 2ch
-- Headphones for call testing
+- macOS on Intel for the first supported target.
+- Node.js 20 or newer.
+- npm.
+- [BlackHole 2ch](https://existential.audio/blackhole/) installed.
 
-## Development
+## Install
 
 ```bash
+git clone https://github.com/LapwifiNet/english-corrector.git
+cd english-corrector
 npm install
-npm run dev
 ```
 
-Quality gate:
+## Validate
+
+Run the complete check:
 
 ```bash
 npm run check
 ```
 
-The quality gate checks formatting, TypeScript, unit tests, Electron compilation, and the renderer production build.
+This runs Prettier validation, Node tests, TypeScript checks, and all Electron builds.
 
-## Manual Epic 0 checkpoint
+The deterministic suite currently contains 25 tests across the audio-device, test-fixture, streaming-buffer, PCM-normalization, fake-provider, and utterance-runner layers.
 
-1. Install BlackHole 2ch.
-2. Run the desktop app.
-3. Grant microphone access.
-4. Select the physical microphone as input.
-5. Select BlackHole 2ch as output.
-6. Select BlackHole 2ch as the microphone in the meeting app.
-7. Play the three-tone fixture.
-8. Confirm that the meeting app receives exactly one fixture playback.
-9. Stop the test and confirm that no buffered audio remains.
+For sandbox or offline validation without the final TypeScript step:
 
-## Privacy defaults
+```bash
+npm run check:offline
+```
 
-- Raw microphone passthrough is off.
-- The generated fixture stays on the local Mac.
-- The app does not store raw audio or transcripts.
-- No provider credentials are present in the renderer.
+## Run
 
-## Status
+```bash
+npm run dev
+```
 
-The renderer and domain logic are validated with offline tooling. A fresh dependency install, Electron launch, and actual BlackHole routing still require verification on the declared macOS Intel test machine.
+Then:
+
+1. Grant microphone access.
+2. Select the physical microphone.
+3. Select `BlackHole 2ch` as the virtual output.
+4. Enter an English sentence.
+5. Click **Send to virtual mic**.
+6. In Zoom, Meet, or Discord, choose `BlackHole 2ch` as the microphone.
+7. Confirm that the deterministic diagnostic sequence arrives once.
+8. Start another run and click **Cancel** to verify that playback stops cleanly.
+
+You can still click **Play three tones** to retest the simpler Epic 0 route.
+
+## Streaming design
+
+The UI depends on a stable adapter contract rather than a provider SDK:
+
+```text
+TtsAdapter.stream(request, signal)
+  -> meta
+  -> chunk(sequence, payload)
+  -> done
+```
+
+The renderer then applies:
+
+```text
+ordered chunk buffer
+  -> PCM decode
+  -> resample to 48 kHz
+  -> duplicate mono to stereo
+  -> Web Audio output sink
+  -> selected BlackHole device
+```
+
+Important invariants:
+
+- Every utterance has one immutable ID.
+- Duplicate chunks are ignored.
+- Missing sequences fail before playback finishes.
+- A bounded high-water mark prevents unbounded buffering.
+- Provider failures use stable internal error codes.
+- Retrying is never automatic, preventing duplicate speech.
+- Cancellation propagates through provider request, buffer, and output sink.
+
+## Scripts
+
+- `npm run dev`: run renderer watch mode and Electron.
+- `npm run build`: build Electron main, preload, and renderer bundles.
+- `npm test`: run deterministic unit and integration tests.
+- `npm run typecheck`: typecheck Electron, renderer, and Node test targets.
+- `npm run check`: run formatting, tests, typechecking, and build.
+- `npm run check:offline`: run formatting, tests, and build.
+
+## Next milestone
+
+Add a real streaming TTS provider behind the existing `TtsAdapter`, normalize the provider's stream into the same internal format, then manually verify intelligible speech through BlackHole on macOS Intel. Epic 1 is not complete until that manual test passes.
