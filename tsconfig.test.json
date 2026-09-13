@@ -5,6 +5,6 @@
     "moduleResolution": "NodeNext",
     "types": ["node"]
   },
-  "include": ["src/renderer/**/*.test.ts"],
+  "include": ["src/main/**/*.test.ts", "src/renderer/**/*.test.ts"],
   "exclude": []
 }
