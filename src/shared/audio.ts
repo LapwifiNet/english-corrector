@@ -1,3 +1,5 @@
+import type { TtsBridge } from "./tts";
+
 export type MicrophonePermissionStatus =
   | "not-determined"
   | "granted"
@@ -11,4 +13,5 @@ export type DesktopApi = {
     getStatus: () => Promise<MicrophonePermissionStatus>;
     request: () => Promise<boolean>;
   };
+  tts: TtsBridge;
 };

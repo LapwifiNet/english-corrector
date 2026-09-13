@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, systemPreferences } from "electron";
 import { join } from "node:path";
 import type { MicrophonePermissionStatus } from "../shared/audio";
+import { registerTtsIpc } from "./ttsIpc";
 
 function microphoneStatus(): MicrophonePermissionStatus {
   if (process.platform !== "darwin") return "unsupported";
@@ -43,6 +44,7 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   registerAudioIpc();
+  registerTtsIpc();
   createWindow();
 
   app.on("activate", () => {
