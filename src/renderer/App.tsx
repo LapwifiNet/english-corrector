@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MicrophonePermissionStatus } from "../shared/audio";
+import type { TtsProviderStatus } from "../shared/tts";
 import {
   restoreDeviceId,
   routingWarning,
@@ -11,10 +12,12 @@ import { createThreeToneWavBlob } from "./audio/testFixture";
 import { StreamingWebAudioSink } from "./audio/webAudioSink";
 import type {
   PipelineSnapshot,
+  TtsAdapter,
   UtteranceMetrics,
   UtteranceStage,
 } from "./tts/contracts";
 import { createUtteranceId } from "./tts/contracts";
+import { ElevenLabsTtsAdapter } from "./tts/elevenLabsTtsAdapter";
 import { FakeTtsAdapter } from "./tts/fakeTtsAdapter";
 import { runUtterance } from "./tts/runUtterance";
 
@@ -55,7 +58,7 @@ function permissionLabel(status: MicrophonePermissionStatus): string {
 function pipelineLabel(stage: UtteranceStage, outputReady: boolean): string {
   switch (stage) {
     case "synthesizing":
-      return "Synthesizing diagnostic audio";
+      return "Synthesizing audio";
     case "buffering":
       return "Buffering ordered chunks";
     case "playing":
@@ -67,7 +70,7 @@ function pipelineLabel(stage: UtteranceStage, outputReady: boolean): string {
     case "failed":
       return "Last stream failed";
     default:
-      return outputReady ? "Ready for text diagnostic" : "Setup required";
+      return outputReady ? "Ready for text streaming" : "Setup required";
   }
 }
 
@@ -85,8 +88,22 @@ function friendlyPipelineError(code?: string): string {
       return "A streaming audio chunk did not arrive.";
     case "unsupported_audio_format":
       return "The synthesizer returned an unsupported audio format.";
+    case "provider_not_configured":
+      return "Configure the ElevenLabs API key and voice ID, then restart the app.";
+    case "provider_auth_error":
+      return "ElevenLabs rejected the API key. Check the local environment value.";
+    case "provider_rate_limited":
+      return "ElevenLabs rate-limited this request. Retry manually after a pause.";
+    case "provider_request_error":
+    case "provider_voice_mismatch":
+      return "ElevenLabs rejected the text, model, or configured voice.";
+    case "provider_unavailable":
+    case "provider_http_error":
+    case "provider_stream_error":
+    case "provider_empty_audio":
+      return "The ElevenLabs audio stream was unavailable or incomplete.";
     default:
-      return "The diagnostic stream failed safely. No automatic retry was made.";
+      return "The stream failed safely. No automatic retry was made.";
   }
 }
 
@@ -117,8 +134,11 @@ function StatusDot({ ready }: { ready: boolean }) {
 }
 
 export function App() {
-  const ttsAdapter = useMemo(() => new FakeTtsAdapter(), []);
-  const voices = ttsAdapter.listVoices();
+  const fakeTtsAdapter = useMemo(() => new FakeTtsAdapter(), []);
+  const [ttsAdapter, setTtsAdapter] = useState<TtsAdapter>(fakeTtsAdapter);
+  const [providerStatus, setProviderStatus] =
+    useState<TtsProviderStatus | null>(null);
+  const voices = useMemo(() => ttsAdapter.listVoices(), [ttsAdapter]);
   const [permission, setPermission] =
     useState<MicrophonePermissionStatus>("unknown");
   const [inputs, setInputs] = useState<AudioDeviceChoice[]>([]);
@@ -149,6 +169,7 @@ export function App() {
   const pipelineBusy = ["synthesizing", "buffering", "playing"].includes(
     pipelineStage,
   );
+  const usingNaturalVoice = ttsAdapter.provider === "elevenlabs";
 
   const loadDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -189,6 +210,38 @@ export function App() {
       ),
     );
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const bridge = window.desktopApi?.tts;
+    if (!bridge) return () => undefined;
+
+    void bridge
+      .getStatus()
+      .then((status) => {
+        if (!mounted) return;
+        setProviderStatus(status);
+
+        if (status.configured && status.voiceId) {
+          const adapter = new ElevenLabsTtsAdapter(bridge, status);
+          setTtsAdapter(adapter);
+          setVoiceId(adapter.listVoices()[0]?.id ?? "");
+          setPipelineMessage(
+            `ElevenLabs ${status.modelId} is ready for natural speech streaming.`,
+          );
+        }
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setPipelineMessage(
+          "Provider status could not be loaded. Diagnostic PCM remains active.",
+        );
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [fakeTtsAdapter]);
 
   useEffect(() => {
     let mounted = true;
@@ -367,6 +420,11 @@ export function App() {
       setPipelineMessage("Select a virtual output before starting.");
       return;
     }
+    if (!voiceId) {
+      setPipelineStage("failed");
+      setPipelineMessage("No TTS voice is available.");
+      return;
+    }
 
     stopFixture();
     const controller = new AbortController();
@@ -377,7 +435,11 @@ export function App() {
     setPipelineMetrics(null);
     setBufferedBytes(0);
     setPipelineStage("synthesizing");
-    setPipelineMessage("Starting deterministic streaming synthesis.");
+    setPipelineMessage(
+      usingNaturalVoice
+        ? "Starting ElevenLabs streaming synthesis."
+        : "Starting deterministic streaming synthesis.",
+    );
 
     const result = await runUtterance({
       adapter: ttsAdapter,
@@ -402,7 +464,9 @@ export function App() {
 
     if (result.stage === "completed") {
       setPipelineMessage(
-        "Diagnostic stream completed once. Confirm it arrived in the call app.",
+        usingNaturalVoice
+          ? "Natural speech stream completed once. Confirm it arrived in the call app."
+          : "Diagnostic stream completed once. Confirm it arrived in the call app.",
       );
     } else if (result.stage === "cancelled") {
       setPipelineMessage("Request, buffer, and output were cancelled safely.");
@@ -425,11 +489,16 @@ export function App() {
     <main className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">EPIC 1 · STREAMING TTS DIAGNOSTIC</p>
+          <p className="eyebrow">
+            {usingNaturalVoice
+              ? "EPIC 1 · ELEVENLABS STREAMING TTS"
+              : "EPIC 1 · STREAMING TTS DIAGNOSTIC"}
+          </p>
           <h1>Stream text into your virtual mic.</h1>
           <p className="hero-copy">
-            Exercise an ordered, cancellable audio pipeline before connecting a
-            production speech provider.
+            {usingNaturalVoice
+              ? "Generate natural English speech in the main process and stream ordered PCM into BlackHole."
+              : "Exercise an ordered, cancellable audio pipeline before connecting a production speech provider."}
           </p>
         </div>
         <div className="platform-badge" aria-label="Target platform">
@@ -438,7 +507,9 @@ export function App() {
           </span>
           <span>
             <strong>macOS Intel</strong>
-            <small>Epic 0 verified</small>
+            <small>
+              {usingNaturalVoice ? "Natural TTS ready" : "Epic 0 verified"}
+            </small>
           </span>
         </div>
       </header>
@@ -556,7 +627,11 @@ export function App() {
               </span>
               <div>
                 <strong>Ordered audio pipeline</strong>
-                <small>48 kHz stereo internal format</small>
+                <small>
+                  {usingNaturalVoice
+                    ? "ElevenLabs PCM to 48 kHz stereo"
+                    : "48 kHz stereo internal format"}
+                </small>
               </div>
             </div>
             <div className="route-line">
@@ -586,9 +661,19 @@ export function App() {
           <div className="panel-heading">
             <div>
               <p className="section-label">03 · TEXT TO AUDIO</p>
-              <h2 id="speech-heading">Streaming diagnostic</h2>
+              <h2 id="speech-heading">
+                {usingNaturalVoice
+                  ? "Natural speech stream"
+                  : "Streaming diagnostic"}
+              </h2>
             </div>
-            <span className="step-state diagnostic">Fake adapter</span>
+            <span
+              className={
+                usingNaturalVoice ? "step-state" : "step-state diagnostic"
+              }
+            >
+              {usingNaturalVoice ? "ElevenLabs" : "Fake adapter"}
+            </span>
           </div>
 
           <label className="text-field">
@@ -624,7 +709,8 @@ export function App() {
                   pipelineBusy ||
                   testState === "playing" ||
                   !textOutputReady ||
-                  !diagnosticText.trim()
+                  !diagnosticText.trim() ||
+                  !voiceId
                 }
                 onClick={() => void startDiagnostic()}
               >
@@ -641,9 +727,22 @@ export function App() {
           </div>
 
           <div className="diagnostic-note">
-            <strong>Diagnostic audio only.</strong> This adapter maps text to
-            deterministic speech-like PCM tones. A natural voice provider is the
-            next integration.
+            {usingNaturalVoice ? (
+              <>
+                <strong>Natural streaming enabled.</strong> ElevenLabs runs in
+                the Electron main process. The API key is never sent to the
+                renderer.
+              </>
+            ) : (
+              <>
+                <strong>Diagnostic audio only.</strong> This adapter maps text
+                to deterministic speech-like PCM tones. Configure
+                {providerStatus?.missing.length
+                  ? ` ${providerStatus.missing.join(" and ")}`
+                  : " the ElevenLabs environment values"}
+                , then restart the app to enable natural speech.
+              </>
+            )}
           </div>
         </div>
 
@@ -718,7 +817,11 @@ export function App() {
 
       <footer>
         <span>Raw microphone passthrough is off.</span>
-        <span>No text or audio leaves this Mac in diagnostic mode.</span>
+        <span>
+          {usingNaturalVoice
+            ? "Text is sent to ElevenLabs only when you press Send."
+            : "No text or audio leaves this Mac in diagnostic mode."}
+        </span>
       </footer>
     </main>
   );
