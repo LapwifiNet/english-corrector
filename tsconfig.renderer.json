@@ -17,5 +17,6 @@
     "jsx": "react-jsx",
     "types": ["react", "react-dom"]
   },
-  "include": ["src/renderer", "src/shared"]
+  "include": ["src/renderer", "src/shared"],
+  "exclude": ["src/**/*.test.ts"]
 }
