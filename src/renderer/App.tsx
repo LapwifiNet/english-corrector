@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MicrophonePermissionStatus } from "../shared/audio";
-import { createThreeToneWavBlob } from "./audio/testFixture";
 import {
   restoreDeviceId,
   routingWarning,
@@ -8,6 +7,16 @@ import {
   type AudioDeviceChoice,
   type AudioDeviceDescriptor,
 } from "./audio/deviceState";
+import { createThreeToneWavBlob } from "./audio/testFixture";
+import { StreamingWebAudioSink } from "./audio/webAudioSink";
+import type {
+  PipelineSnapshot,
+  UtteranceMetrics,
+  UtteranceStage,
+} from "./tts/contracts";
+import { createUtteranceId } from "./tts/contracts";
+import { FakeTtsAdapter } from "./tts/fakeTtsAdapter";
+import { runUtterance } from "./tts/runUtterance";
 
 type TestState = "idle" | "playing" | "passed" | "failed";
 
@@ -17,6 +26,14 @@ type SinkSelectableAudio = HTMLAudioElement & {
 
 const INPUT_STORAGE_KEY = "english-corrector.input-device";
 const OUTPUT_STORAGE_KEY = "english-corrector.output-device";
+const DEFAULT_DIAGNOSTIC_TEXT =
+  "Hello. This is the English Corrector streaming audio diagnostic.";
+const PIPELINE_STAGES: UtteranceStage[] = [
+  "synthesizing",
+  "buffering",
+  "playing",
+  "completed",
+];
 
 function permissionLabel(status: MicrophonePermissionStatus): string {
   switch (status) {
@@ -35,6 +52,64 @@ function permissionLabel(status: MicrophonePermissionStatus): string {
   }
 }
 
+function pipelineLabel(stage: UtteranceStage, outputReady: boolean): string {
+  switch (stage) {
+    case "synthesizing":
+      return "Synthesizing diagnostic audio";
+    case "buffering":
+      return "Buffering ordered chunks";
+    case "playing":
+      return "Streaming to virtual output";
+    case "completed":
+      return "Last stream completed";
+    case "cancelled":
+      return "Last stream cancelled";
+    case "failed":
+      return "Last stream failed";
+    default:
+      return outputReady ? "Ready for text diagnostic" : "Setup required";
+  }
+}
+
+function friendlyPipelineError(code?: string): string {
+  switch (code) {
+    case "invalid_text":
+      return "Enter a sentence before starting synthesis.";
+    case "output_device_required":
+      return "Select a virtual output before starting.";
+    case "output_device_error":
+      return "The selected output could not play the stream.";
+    case "buffer_overflow":
+      return "The audio buffer reached its safety limit.";
+    case "chunk_sequence_gap":
+      return "A streaming audio chunk did not arrive.";
+    case "unsupported_audio_format":
+      return "The synthesizer returned an unsupported audio format.";
+    default:
+      return "The diagnostic stream failed safely. No automatic retry was made.";
+  }
+}
+
+function elapsed(
+  metrics: UtteranceMetrics | null,
+  end: keyof UtteranceMetrics,
+): string {
+  if (!metrics) return "Pending";
+  const endValue = metrics[end];
+  if (typeof endValue !== "number") return "Pending";
+  return `${Math.max(0, Math.round(endValue - metrics.requestStartedAt))} ms`;
+}
+
+function stageClass(current: UtteranceStage, item: UtteranceStage): string {
+  if (current === item) return "pipeline-stage active";
+  if (current === "completed") return "pipeline-stage done";
+
+  const currentIndex = PIPELINE_STAGES.indexOf(current);
+  const itemIndex = PIPELINE_STAGES.indexOf(item);
+  if (currentIndex > itemIndex && itemIndex >= 0) return "pipeline-stage done";
+  return "pipeline-stage";
+}
+
 function StatusDot({ ready }: { ready: boolean }) {
   return (
     <span className={ready ? "status-dot ready" : "status-dot"} aria-hidden />
@@ -42,6 +117,8 @@ function StatusDot({ ready }: { ready: boolean }) {
 }
 
 export function App() {
+  const ttsAdapter = useMemo(() => new FakeTtsAdapter(), []);
+  const voices = ttsAdapter.listVoices();
   const [permission, setPermission] =
     useState<MicrophonePermissionStatus>("unknown");
   const [inputs, setInputs] = useState<AudioDeviceChoice[]>([]);
@@ -49,13 +126,29 @@ export function App() {
   const [selectedInput, setSelectedInput] = useState("");
   const [selectedOutput, setSelectedOutput] = useState("");
   const [testState, setTestState] = useState<TestState>("idle");
-  const [message, setMessage] = useState(
-    "Choose devices to begin the routing test.",
+  const [testMessage, setTestMessage] = useState(
+    "Use the three-tone fixture for a quick routing check.",
   );
-  const activeAudio = useRef<{
+  const [diagnosticText, setDiagnosticText] = useState(DEFAULT_DIAGNOSTIC_TEXT);
+  const [voiceId, setVoiceId] = useState(voices[0]?.id ?? "");
+  const [pipelineStage, setPipelineStage] = useState<UtteranceStage>("idle");
+  const [pipelineMetrics, setPipelineMetrics] =
+    useState<UtteranceMetrics | null>(null);
+  const [bufferedBytes, setBufferedBytes] = useState(0);
+  const [pipelineMessage, setPipelineMessage] = useState(
+    "Enter text to exercise the streaming contract with deterministic PCM.",
+  );
+  const activeFixture = useRef<{
     element: SinkSelectableAudio;
     objectUrl: string;
   } | null>(null);
+  const utteranceController = useRef<AbortController | null>(null);
+  const utteranceSink = useRef<StreamingWebAudioSink | null>(null);
+  const utteranceOutput = useRef<string | null>(null);
+
+  const pipelineBusy = ["synthesizing", "buffering", "playing"].includes(
+    pipelineStage,
+  );
 
   const loadDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -69,6 +162,17 @@ export function App() {
     }));
     const nextInputs = toDeviceChoices(descriptors, "audioinput");
     const nextOutputs = toDeviceChoices(descriptors, "audiooutput");
+
+    if (
+      utteranceOutput.current &&
+      !nextOutputs.some((device) => device.deviceId === utteranceOutput.current)
+    ) {
+      utteranceController.current?.abort();
+      void utteranceSink.current?.stop();
+      setPipelineMessage(
+        "The active output disappeared. The stream was cancelled safely.",
+      );
+    }
 
     setInputs(nextInputs);
     setOutputs(nextOutputs);
@@ -117,9 +221,11 @@ export function App() {
         "devicechange",
         handleDeviceChange,
       );
-      const active = activeAudio.current;
-      active?.element.pause();
-      if (active) URL.revokeObjectURL(active.objectUrl);
+      utteranceController.current?.abort();
+      void utteranceSink.current?.stop();
+      const fixture = activeFixture.current;
+      fixture?.element.pause();
+      if (fixture) URL.revokeObjectURL(fixture.objectUrl);
     };
   }, [loadDevices]);
 
@@ -131,7 +237,7 @@ export function App() {
 
       if (!granted) {
         setPermission("denied");
-        setMessage(
+        setTestMessage(
           "Permission was not granted. Open macOS System Settings to try again.",
         );
         return;
@@ -140,13 +246,13 @@ export function App() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((track) => track.stop());
       setPermission("granted");
-      setMessage(
+      setTestMessage(
         "Permission granted. Select the physical mic and BlackHole output.",
       );
       await loadDevices();
     } catch {
       setPermission("denied");
-      setMessage(
+      setTestMessage(
         "The microphone could not be opened. Check macOS privacy settings.",
       );
     }
@@ -161,37 +267,40 @@ export function App() {
   const selectOutput = (deviceId: string) => {
     setSelectedOutput(deviceId);
     setTestState("idle");
+    setPipelineStage("idle");
+    setPipelineMetrics(null);
     localStorage.setItem(OUTPUT_STORAGE_KEY, deviceId);
   };
 
   const input = inputs.find((device) => device.deviceId === selectedInput);
   const output = outputs.find((device) => device.deviceId === selectedOutput);
   const warning = routingWarning(input, output);
-  const routingReady =
+  const fixtureReady =
     permission === "granted" && Boolean(input && output) && !warning;
+  const textOutputReady = permission === "granted" && Boolean(output);
 
-  const stopTest = useCallback(() => {
-    const active = activeAudio.current;
-    if (active) {
-      active.element.pause();
-      active.element.currentTime = 0;
-      active.element.removeAttribute("src");
-      active.element.load();
-      URL.revokeObjectURL(active.objectUrl);
-      activeAudio.current = null;
+  const stopFixture = useCallback(() => {
+    const fixture = activeFixture.current;
+    if (fixture) {
+      fixture.element.pause();
+      fixture.element.currentTime = 0;
+      fixture.element.removeAttribute("src");
+      fixture.element.load();
+      URL.revokeObjectURL(fixture.objectUrl);
+      activeFixture.current = null;
     }
 
     setTestState("idle");
-    setMessage("Test stopped. No buffered fixture audio remains.");
+    setTestMessage("Fixture stopped. No buffered fixture audio remains.");
   }, []);
 
-  const playTest = async () => {
-    if (!routingReady || !selectedOutput) return;
+  const playFixture = async () => {
+    if (!fixtureReady || !selectedOutput || pipelineBusy) return;
 
-    stopTest();
+    stopFixture();
     const objectUrl = URL.createObjectURL(createThreeToneWavBlob());
     const audio = new Audio(objectUrl) as SinkSelectableAudio;
-    activeAudio.current = { element: audio, objectUrl };
+    activeFixture.current = { element: audio, objectUrl };
 
     try {
       if (!audio.setSinkId) {
@@ -205,9 +314,9 @@ export function App() {
         "ended",
         () => {
           URL.revokeObjectURL(objectUrl);
-          activeAudio.current = null;
+          activeFixture.current = null;
           setTestState("passed");
-          setMessage(
+          setTestMessage(
             "Fixture completed. Confirm that the call app received three tones.",
           );
         },
@@ -215,36 +324,112 @@ export function App() {
       );
 
       setTestState("playing");
-      setMessage("Playing three test tones into the selected virtual output.");
+      setTestMessage("Playing three test tones into the selected output.");
       await audio.play();
     } catch (error) {
       audio.pause();
       URL.revokeObjectURL(objectUrl);
-      activeAudio.current = null;
+      activeFixture.current = null;
       setTestState("failed");
-      setMessage(
+      setTestMessage(
         error instanceof Error ? error.message : "The routing test failed.",
       );
     }
   };
 
+  const updatePipeline = (snapshot: PipelineSnapshot) => {
+    setPipelineStage(snapshot.stage);
+    setPipelineMetrics(snapshot.metrics);
+    setBufferedBytes(snapshot.bufferedBytes);
+
+    if (snapshot.stage === "synthesizing") {
+      setPipelineMessage("Synthesizer request started.");
+    } else if (snapshot.stage === "buffering") {
+      setPipelineMessage("Ordering chunks and filling the startup buffer.");
+    } else if (snapshot.stage === "playing") {
+      setPipelineMessage(
+        "Audio is streaming once into the selected virtual output.",
+      );
+    } else if (snapshot.stage === "failed") {
+      setPipelineMessage(friendlyPipelineError(snapshot.errorCode));
+    }
+  };
+
+  const startDiagnostic = async () => {
+    if (pipelineBusy) return;
+    if (!diagnosticText.trim()) {
+      setPipelineStage("failed");
+      setPipelineMessage("Enter a sentence before starting synthesis.");
+      return;
+    }
+    if (!textOutputReady || !selectedOutput) {
+      setPipelineStage("failed");
+      setPipelineMessage("Select a virtual output before starting.");
+      return;
+    }
+
+    stopFixture();
+    const controller = new AbortController();
+    const sink = new StreamingWebAudioSink();
+    utteranceController.current = controller;
+    utteranceSink.current = sink;
+    utteranceOutput.current = selectedOutput;
+    setPipelineMetrics(null);
+    setBufferedBytes(0);
+    setPipelineStage("synthesizing");
+    setPipelineMessage("Starting deterministic streaming synthesis.");
+
+    const result = await runUtterance({
+      adapter: ttsAdapter,
+      request: {
+        utteranceId: createUtteranceId(),
+        text: diagnosticText,
+        voiceId,
+      },
+      sink,
+      outputDeviceId: selectedOutput,
+      signal: controller.signal,
+      onSnapshot: updatePipeline,
+    });
+
+    if (utteranceController.current !== controller) return;
+    utteranceController.current = null;
+    utteranceSink.current = null;
+    utteranceOutput.current = null;
+    setPipelineMetrics(result.metrics);
+    setBufferedBytes(0);
+    setPipelineStage(result.stage);
+
+    if (result.stage === "completed") {
+      setPipelineMessage(
+        "Diagnostic stream completed once. Confirm it arrived in the call app.",
+      );
+    } else if (result.stage === "cancelled") {
+      setPipelineMessage("Request, buffer, and output were cancelled safely.");
+    } else {
+      setPipelineMessage(friendlyPipelineError(result.errorCode));
+    }
+  };
+
+  const cancelDiagnostic = () => {
+    if (!utteranceController.current) return;
+    setPipelineMessage("Cancelling request, buffer, and output.");
+    utteranceController.current.abort();
+    void utteranceSink.current?.stop();
+  };
+
   const permissionReady = permission === "granted";
-  const testStatus = useMemo(() => {
-    if (testState === "playing") return "Test playing";
-    if (testState === "passed") return "Playback completed";
-    if (testState === "failed") return "Test failed";
-    return routingReady ? "Ready to test" : "Setup required";
-  }, [routingReady, testState]);
+  const controlsLocked = pipelineBusy || testState === "playing";
 
   return (
     <main className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">EPIC 0 · AUDIO ROUTING</p>
-          <h1>Route audio with confidence.</h1>
+          <p className="eyebrow">EPIC 1 · STREAMING TTS DIAGNOSTIC</p>
+          <h1>Stream text into your virtual mic.</h1>
           <p className="hero-copy">
-            Select a physical microphone, send a deterministic fixture to
-            BlackHole, then confirm that your meeting app receives it.
+            Exercise an ordered, cancellable audio pipeline before connecting a
+            production speech provider.
           </p>
         </div>
         <div className="platform-badge" aria-label="Target platform">
@@ -253,7 +438,7 @@ export function App() {
           </span>
           <span>
             <strong>macOS Intel</strong>
-            <small>First target</small>
+            <small>Epic 0 verified</small>
           </span>
         </div>
       </header>
@@ -268,8 +453,8 @@ export function App() {
           <span>{output?.displayName || "Virtual output not selected"}</span>
         </div>
         <div>
-          <StatusDot ready={routingReady} />
-          <span>{testStatus}</span>
+          <StatusDot ready={pipelineStage === "completed" || textOutputReady} />
+          <span>{pipelineLabel(pipelineStage, textOutputReady)}</span>
         </div>
       </section>
 
@@ -291,8 +476,8 @@ export function App() {
               <div>
                 <h3>Allow microphone access</h3>
                 <p>
-                  Permission is used to discover audio devices. Raw microphone
-                  audio is not routed during this test.
+                  Permission discovers audio devices. Raw microphone audio is
+                  not routed during this diagnostic.
                 </p>
               </div>
               <button className="primary-button" onClick={requestMicrophone}>
@@ -305,6 +490,7 @@ export function App() {
                 <span>Physical microphone</span>
                 <select
                   value={selectedInput}
+                  disabled={controlsLocked}
                   onChange={(event) => selectInput(event.target.value)}
                 >
                   <option value="">Select microphone</option>
@@ -314,16 +500,14 @@ export function App() {
                     </option>
                   ))}
                 </select>
-                <small>
-                  Captured by English Corrector, never sent directly to the
-                  call.
-                </small>
+                <small>Reserved for the upcoming capture pipeline.</small>
               </label>
 
               <label>
                 <span>Virtual output</span>
                 <select
                   value={selectedOutput}
+                  disabled={controlsLocked}
                   onChange={(event) => selectOutput(event.target.value)}
                 >
                   <option value="">Select output</option>
@@ -333,7 +517,7 @@ export function App() {
                     </option>
                   ))}
                 </select>
-                <small>Select BlackHole 2ch for the routing spike.</small>
+                <small>Select BlackHole 2ch for the streaming test.</small>
               </label>
             </div>
           )}
@@ -356,34 +540,34 @@ export function App() {
           <div className="route-map" aria-label="Audio route">
             <div className="route-node">
               <span className="node-icon" aria-hidden>
-                ◉
+                TXT
               </span>
               <div>
-                <strong>Physical mic</strong>
-                <small>{input?.displayName || "Not selected"}</small>
+                <strong>Diagnostic text</strong>
+                <small>{diagnosticText.trim() || "No text entered"}</small>
               </div>
             </div>
             <div className="route-line">
-              <span>Input</span>
+              <span>Streamed PCM</span>
             </div>
             <div className="route-node app-node">
               <span className="node-icon" aria-hidden>
                 EC
               </span>
               <div>
-                <strong>English Corrector</strong>
-                <small>Fixture player</small>
+                <strong>Ordered audio pipeline</strong>
+                <small>48 kHz stereo internal format</small>
               </div>
             </div>
             <div className="route-line">
-              <span>Processed</span>
+              <span>One playback</span>
             </div>
             <div className="route-node">
               <span className="node-icon" aria-hidden>
-                ◎
+                OUT
               </span>
               <div>
-                <strong>Virtual mic</strong>
+                <strong>Virtual microphone</strong>
                 <small>{output?.displayName || "Not selected"}</small>
               </div>
             </div>
@@ -397,22 +581,134 @@ export function App() {
         </section>
       </div>
 
+      <section className="speech-lab" aria-labelledby="speech-heading">
+        <div className="speech-editor">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">03 · TEXT TO AUDIO</p>
+              <h2 id="speech-heading">Streaming diagnostic</h2>
+            </div>
+            <span className="step-state diagnostic">Fake adapter</span>
+          </div>
+
+          <label className="text-field">
+            <span>English sentence</span>
+            <textarea
+              value={diagnosticText}
+              maxLength={280}
+              disabled={pipelineBusy}
+              onChange={(event) => setDiagnosticText(event.target.value)}
+            />
+            <small>{diagnosticText.length} / 280 characters</small>
+          </label>
+
+          <div className="speech-controls">
+            <label>
+              <span>Voice</span>
+              <select
+                value={voiceId}
+                disabled={pipelineBusy}
+                onChange={(event) => setVoiceId(event.target.value)}
+              >
+                {voices.map((voice) => (
+                  <option key={voice.id} value={voice.id}>
+                    {voice.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="button-group">
+              <button
+                className="primary-button"
+                disabled={
+                  pipelineBusy ||
+                  testState === "playing" ||
+                  !textOutputReady ||
+                  !diagnosticText.trim()
+                }
+                onClick={() => void startDiagnostic()}
+              >
+                Send to virtual mic
+              </button>
+              <button
+                className="cancel-button"
+                disabled={!pipelineBusy}
+                onClick={cancelDiagnostic}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <div className="diagnostic-note">
+            <strong>Diagnostic audio only.</strong> This adapter maps text to
+            deterministic speech-like PCM tones. A natural voice provider is the
+            next integration.
+          </div>
+        </div>
+
+        <aside className="pipeline-monitor" aria-label="Streaming status">
+          <div className="monitor-heading">
+            <div>
+              <p className="section-label">LIVE PIPELINE</p>
+              <h2>Stream monitor</h2>
+            </div>
+            <span className={`live-indicator ${pipelineBusy ? "on" : ""}`}>
+              {pipelineBusy ? "Live" : "Idle"}
+            </span>
+          </div>
+
+          <div className="pipeline-stages">
+            {PIPELINE_STAGES.map((item, index) => (
+              <div className={stageClass(pipelineStage, item)} key={item}>
+                <span>{index + 1}</span>
+                <strong>{item}</strong>
+              </div>
+            ))}
+          </div>
+
+          <p className="pipeline-message" aria-live="polite">
+            {pipelineMessage}
+          </p>
+
+          <div className="metric-grid">
+            <div>
+              <small>First chunk</small>
+              <strong>{elapsed(pipelineMetrics, "firstChunkAt")}</strong>
+            </div>
+            <div>
+              <small>First audio</small>
+              <strong>{elapsed(pipelineMetrics, "playbackStartedAt")}</strong>
+            </div>
+            <div>
+              <small>Total</small>
+              <strong>{elapsed(pipelineMetrics, "playbackCompletedAt")}</strong>
+            </div>
+          </div>
+
+          <div className="buffer-line">
+            <span>Buffered</span>
+            <strong>{(bufferedBytes / 1_024).toFixed(1)} KB</strong>
+          </div>
+        </aside>
+      </section>
+
       <section className="test-console" aria-labelledby="test-heading">
         <div>
-          <p className="section-label">03 · VERIFY</p>
-          <h2 id="test-heading">Play a deterministic fixture</h2>
-          <p aria-live="polite">{message}</p>
+          <p className="section-label">04 · ROUTE CHECK</p>
+          <h2 id="test-heading">Keep the known-good fixture</h2>
+          <p aria-live="polite">{testMessage}</p>
         </div>
         <div className="test-actions">
           {testState === "playing" ? (
-            <button className="stop-button" onClick={stopTest}>
-              Stop test
+            <button className="stop-button" onClick={stopFixture}>
+              Stop fixture
             </button>
           ) : (
             <button
-              className="primary-button"
-              disabled={!routingReady}
-              onClick={() => void playTest()}
+              className="secondary-button"
+              disabled={!fixtureReady || pipelineBusy}
+              onClick={() => void playFixture()}
             >
               Play three tones
             </button>
@@ -422,7 +718,7 @@ export function App() {
 
       <footer>
         <span>Raw microphone passthrough is off.</span>
-        <span>Fixture audio stays on this Mac.</span>
+        <span>No text or audio leaves this Mac in diagnostic mode.</span>
       </footer>
     </main>
   );
