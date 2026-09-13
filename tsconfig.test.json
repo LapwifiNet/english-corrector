@@ -5,6 +5,6 @@
     "moduleResolution": "NodeNext",
     "types": ["node"]
   },
-  "include": ["src/renderer/audio/*.test.ts"],
+  "include": ["src/renderer/**/*.test.ts"],
   "exclude": []
 }
