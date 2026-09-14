@@ -19,6 +19,15 @@ export const CHUNK_MS = 50;
 export const MIN_TURN_SILENCE_MS = 50;
 export const MAX_TURN_SILENCE_MS = 10_000;
 
+/**
+ * The provider defaults to 400 ms and 1280 ms, which the speaker hears as
+ * dead air at the end of every sentence. Shorter windows close a turn while
+ * the speaker is drawing breath, and the corrector still receives a whole
+ * sentence because a turn only closes on silence.
+ */
+export const DEFAULT_MIN_TURN_SILENCE_MS = 240;
+export const DEFAULT_MAX_TURN_SILENCE_MS = 700;
+
 export type AssemblyAiConfig = {
   apiKey: string;
   host: string;
@@ -87,8 +96,12 @@ export function readSttRuntimeConfig(
     sampleRate: STT_SAMPLE_RATE,
     formatTurns: trimmed(env.ASSEMBLYAI_FORMAT_TURNS) !== "false",
     finalizeTimeoutMs: DEFAULT_FINALIZE_TIMEOUT_MS,
-    minTurnSilenceMs: turnSilenceMs(env.ASSEMBLYAI_MIN_TURN_SILENCE_MS),
-    maxTurnSilenceMs: turnSilenceMs(env.ASSEMBLYAI_MAX_TURN_SILENCE_MS),
+    minTurnSilenceMs:
+      turnSilenceMs(env.ASSEMBLYAI_MIN_TURN_SILENCE_MS) ??
+      DEFAULT_MIN_TURN_SILENCE_MS,
+    maxTurnSilenceMs:
+      turnSilenceMs(env.ASSEMBLYAI_MAX_TURN_SILENCE_MS) ??
+      DEFAULT_MAX_TURN_SILENCE_MS,
   };
 }
 
@@ -330,9 +343,17 @@ export function startAssemblyAiSession(args: {
   fetchImpl?: FetchLike;
   socketFactory?: SttSocketFactory;
 }): SttSession {
-  const { config, events } = args;
+  const { events } = args;
   const continuous = args.mode === "continuous";
+  // Formatting arrives as a second copy of a turn, and waiting for it adds
+  // the provider's formatting latency to every sentence a continuous session
+  // speaks. The corrector rewrites punctuation anyway, so raw turns are
+  // enough and the sentence is handed over as soon as the turn closes.
+  const config: AssemblyAiConfig = continuous
+    ? { ...args.config, formatTurns: false }
+    : args.config;
   const finals = new Map<number, FinalTurn>();
+  const emittedTurns = new Set<number>();
   const queue: ArrayBuffer[] = [];
   const chunker = createPcmChunker({ sampleRate: config.sampleRate });
 
@@ -402,12 +423,15 @@ export function startAssemblyAiSession(args: {
 
   function emitTurn(order: number): void {
     if (settled || cancelled) return;
+    // A turn is spoken once even if the provider sends a second copy of it.
+    if (emittedTurns.has(order)) return;
 
     const entry = finals.get(order);
     finals.delete(order);
     const text = entry?.text ?? "";
     if (text.length === 0) return;
 
+    emittedTurns.add(order);
     events.onFinal(text, entry?.confidence);
   }
 
