@@ -67,4 +67,8 @@ await Promise.all([
     resolve(root, "src/renderer/palabraSettings.css"),
     resolve(root, "dist/renderer/palabraSettings.css"),
   ),
+  copyFile(
+    resolve(root, "src/renderer/pushToTalk.css"),
+    resolve(root, "dist/renderer/pushToTalk.css"),
+  ),
 ]);
