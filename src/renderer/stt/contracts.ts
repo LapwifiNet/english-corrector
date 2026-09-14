@@ -1,3 +1,5 @@
+import type { SttSessionMode } from "../../shared/stt";
+
 export type PhraseId = string;
 
 export type PhraseStage =
@@ -20,6 +22,8 @@ export type PhraseEvent =
       phraseId: PhraseId;
       revision: number;
       text: string;
+      /** Index of the sentence inside a continuous session. */
+      utterance?: number;
     }
   | {
       type: "capture_ended";
@@ -32,6 +36,8 @@ export type PhraseEvent =
       text: string;
       receivedAt: number;
       confidence?: number;
+      /** Index of the sentence inside a continuous session. */
+      utterance?: number;
     }
   | {
       type: "cancelled";
@@ -61,6 +67,8 @@ export type StartTranscriptionRequest = {
   phraseId: PhraseId;
   signal: AbortSignal;
   onEvent: (event: PhraseEvent) => void;
+  /** Defaults to a phrase session, which ends on the first transcript. */
+  mode?: SttSessionMode;
 };
 
 export interface StreamingTranscriber {

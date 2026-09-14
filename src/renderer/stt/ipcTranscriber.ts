@@ -10,6 +10,9 @@ import type {
 } from "./contracts";
 import { encodePcmChunk } from "./pcmEncoder";
 
+/** How long a continuous session waits for one last transcript on finish. */
+const FINISH_GRACE_MS = 2_500;
+
 /**
  * Speaks to the real provider through the main process. The renderer never
  * holds the API key and only sees transcript events.
@@ -21,8 +24,10 @@ export function createIpcTranscriber(
   return {
     start(request: StartTranscriptionRequest): TranscriptionSession {
       const { phraseId, signal, onEvent } = request;
+      const continuous = request.mode === "continuous";
 
       let closed = false;
+      let finishing = false;
       let unsubscribe: () => void = () => {};
       let settle: () => void = () => {};
       const completion = new Promise<void>((resolve) => {
@@ -49,6 +54,9 @@ export function createIpcTranscriber(
             phraseId,
             revision: event.revision,
             text: event.text,
+            ...(event.utterance === undefined
+              ? {}
+              : { utterance: event.utterance }),
           });
           return;
         }
@@ -60,7 +68,14 @@ export function createIpcTranscriber(
             text: event.text,
             receivedAt: event.receivedAt,
             confidence: event.confidence,
+            ...(event.utterance === undefined
+              ? {}
+              : { utterance: event.utterance }),
           });
+          // Hands-free mode expects more sentences on the same session, so it
+          // stays open until the caller asks to finish.
+          if (continuous && !finishing) return;
+
           stop();
           return;
         }
@@ -76,7 +91,11 @@ export function createIpcTranscriber(
         stop();
       });
 
-      bridge.start({ phraseId, sampleRate: targetSampleRate });
+      bridge.start({
+        phraseId,
+        sampleRate: targetSampleRate,
+        ...(request.mode === undefined ? {} : { mode: request.mode }),
+      });
 
       return {
         write: (frame) => {
@@ -93,8 +112,22 @@ export function createIpcTranscriber(
         },
         finish: () => {
           if (closed) return Promise.resolve();
+
+          finishing = true;
           bridge.finish(phraseId);
-          return completion;
+          if (!continuous) return completion;
+
+          // A continuous session may have nothing left to flush, so waiting
+          // for one more transcript must not hang the caller.
+          return Promise.race([
+            completion,
+            new Promise<void>((resolve) => {
+              setTimeout(() => {
+                stop();
+                resolve();
+              }, FINISH_GRACE_MS);
+            }),
+          ]);
         },
         cancel: () => {
           if (closed) return;
