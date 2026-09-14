@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, systemPreferences } from "electron";
 import { join } from "node:path";
 import type { MicrophonePermissionStatus } from "../shared/audio";
 import { registerCorrectionIpc } from "./correctionIpc";
+import { registerSttIpc } from "./sttIpc";
 import { registerTtsIpc } from "./ttsIpc";
 
 function microphoneStatus(): MicrophonePermissionStatus {
@@ -45,6 +46,7 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   registerAudioIpc();
+  registerSttIpc();
   registerTtsIpc();
   registerCorrectionIpc();
   createWindow();

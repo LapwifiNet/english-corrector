@@ -6,6 +6,11 @@ import {
   type CorrectionProviderStatus,
 } from "../shared/correction";
 import {
+  STT_IPC,
+  type SttBridgeEvent,
+  type SttProviderStatus,
+} from "../shared/stt";
+import {
   TTS_IPC,
   type TtsBridgeEvent,
   type TtsProviderStatus,
@@ -22,6 +27,20 @@ const desktopApi: DesktopApi = {
       ipcRenderer.invoke(
         "audio:request-microphone-permission",
       ) as Promise<boolean>,
+  },
+  stt: {
+    getStatus: () =>
+      ipcRenderer.invoke(STT_IPC.status) as Promise<SttProviderStatus>,
+    start: (request) => ipcRenderer.send(STT_IPC.start, request),
+    sendAudio: (chunk) => ipcRenderer.send(STT_IPC.audio, chunk),
+    finish: (phraseId) => ipcRenderer.send(STT_IPC.finish, phraseId),
+    cancel: (phraseId) => ipcRenderer.send(STT_IPC.cancel, phraseId),
+    onEvent: (listener) => {
+      const handleEvent = (_event: IpcRendererEvent, event: SttBridgeEvent) =>
+        listener(event);
+      ipcRenderer.on(STT_IPC.event, handleEvent);
+      return () => ipcRenderer.removeListener(STT_IPC.event, handleEvent);
+    },
   },
   tts: {
     getStatus: () =>
