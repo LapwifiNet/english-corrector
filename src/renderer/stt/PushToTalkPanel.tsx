@@ -5,6 +5,16 @@ import {
   type AudioDeviceChoice,
   type AudioDeviceDescriptor,
 } from "../audio/deviceState";
+import type { CorrectionProviderStatus } from "../../shared/correction";
+import {
+  createCorrectionPipeline,
+  INITIAL_CORRECTION_SNAPSHOT,
+  type CorrectionPipeline,
+  type CorrectionSnapshot,
+} from "../correction/correctionPipeline";
+import { createCorrectionEngine } from "../correction/correctionEngine";
+import { createFakeCorrector } from "../correction/fakeCorrector";
+import { createIpcCorrectionAdapter } from "../correction/ipcCorrectionAdapter";
 import type { PhraseEvent, TranscriptionSession } from "./contracts";
 import { FakeStreamingTranscriber } from "./fakeTranscriber";
 import {
@@ -30,6 +40,35 @@ type ActivePhrase = {
   pendingFinish: boolean;
   finishing: boolean;
 };
+
+function correctionStageLabel(snapshot: CorrectionSnapshot): string {
+  switch (snapshot.phase) {
+    case "correcting":
+      return "Correcting";
+    case "done":
+      return snapshot.result?.outcome ?? "Safe fallback";
+    case "skipped":
+      return "Bypassed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Waiting for final";
+  }
+}
+
+function correctionText(snapshot: CorrectionSnapshot): string {
+  switch (snapshot.phase) {
+    case "correcting":
+      return "Checking grammar and semantic invariants.";
+    case "done":
+    case "skipped":
+      return snapshot.spokenText;
+    case "cancelled":
+      return "Correction was cancelled before completion.";
+    default:
+      return "A final transcript will appear here after correction.";
+  }
+}
 
 function stageLabel(stage: TranscriptState["stage"]): string {
   switch (stage) {
@@ -81,8 +120,29 @@ export function PushToTalkPanel() {
   );
   const [transcript, setTranscript] = useState(INITIAL_TRANSCRIPT_STATE);
   const [level, setLevel] = useState(0);
+  const [correctionEnabled, setCorrectionEnabled] = useState(true);
+  const [correction, setCorrection] = useState<CorrectionSnapshot>(
+    INITIAL_CORRECTION_SNAPSHOT,
+  );
+  const [providerStatus, setProviderStatus] =
+    useState<CorrectionProviderStatus | null>(null);
+  const [providerStatusFailed, setProviderStatusFailed] = useState(false);
 
   const mountedRef = useRef(true);
+  const correctionPipelineRef = useRef<CorrectionPipeline | null>(null);
+  if (!correctionPipelineRef.current) {
+    const bridge = window.desktopApi?.correction;
+    const adapter = bridge
+      ? createIpcCorrectionAdapter(bridge)
+      : createFakeCorrector({ type: "echo" });
+    const engine = createCorrectionEngine({ adapter });
+    correctionPipelineRef.current = createCorrectionPipeline({
+      engine,
+      onSnapshot: (snapshot) => {
+        if (mountedRef.current) setCorrection(snapshot);
+      },
+    });
+  }
   const controllerRef = useRef(new PushToTalkController());
   const transcriberRef = useRef(new FakeStreamingTranscriber());
   const captureFactoryRef = useRef(new BrowserMicrophoneCapture());
@@ -188,6 +248,7 @@ export function PushToTalkPanel() {
   );
 
   const startPhrase = useCallback(async () => {
+    if (correction.phase === "correcting") return;
     if (!selectedDeviceId) {
       setDeviceMessage("Select a physical microphone first.");
       return;
@@ -195,6 +256,8 @@ export function PushToTalkPanel() {
 
     const started = controllerRef.current.press();
     if (!started) return;
+    correctionPipelineRef.current?.cancel();
+    setCorrection(INITIAL_CORRECTION_SNAPSHOT);
     applyPhraseEvent(started);
 
     const abortController = new AbortController();
@@ -260,7 +323,7 @@ export function PushToTalkPanel() {
       activeRef.current = null;
       setLevel(0);
     }
-  }, [applyPhraseEvent, finishResources, selectedDeviceId]);
+  }, [applyPhraseEvent, correction.phase, finishResources, selectedDeviceId]);
 
   const finishPhrase = useCallback(async () => {
     const ended = controllerRef.current.release();
@@ -278,8 +341,11 @@ export function PushToTalkPanel() {
 
   const cancelPhrase = useCallback(() => {
     const cancelled = controllerRef.current.cancel();
-    if (!cancelled) return;
-    applyPhraseEvent(cancelled);
+    const correctionWasActive =
+      correctionPipelineRef.current?.snapshot().phase === "correcting";
+    correctionPipelineRef.current?.cancel();
+    if (!cancelled && !correctionWasActive) return;
+    if (cancelled) applyPhraseEvent(cancelled);
 
     const active = activeRef.current;
     activeRef.current = null;
@@ -290,6 +356,25 @@ export function PushToTalkPanel() {
     }
     setLevel(0);
   }, [applyPhraseEvent]);
+
+  useEffect(() => {
+    const bridge = window.desktopApi?.correction;
+    if (!bridge) return;
+
+    let active = true;
+    void bridge
+      .getStatus()
+      .then((status) => {
+        if (active) setProviderStatus(status);
+      })
+      .catch(() => {
+        if (active) setProviderStatusFailed(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -308,6 +393,7 @@ export function PushToTalkPanel() {
       active?.abortController.abort();
       active?.transcription.cancel();
       void active?.capture?.stop();
+      correctionPipelineRef.current?.cancel();
     };
   }, [loadDevices]);
 
@@ -351,6 +437,21 @@ export function PushToTalkPanel() {
     }
   }, [cancelPhrase, devices, selectedDeviceId]);
 
+  useEffect(() => {
+    if (
+      transcript.stage !== "final" ||
+      !transcript.phraseId ||
+      !transcript.finalText
+    ) {
+      return;
+    }
+
+    void correctionPipelineRef.current?.submit(
+      transcript.phraseId,
+      transcript.finalText,
+    );
+  }, [transcript.finalText, transcript.phraseId, transcript.stage]);
+
   const selectDevice = (deviceId: string) => {
     setSelectedDeviceId(deviceId);
     localStorage.setItem(INPUT_STORAGE_KEY, deviceId);
@@ -366,6 +467,17 @@ export function PushToTalkPanel() {
           : "Hold Space or the button, then speak.");
   const isCapturing = transcript.stage === "capturing";
   const isFinalizing = transcript.stage === "finalizing";
+  const isCorrecting = correction.phase === "correcting";
+  const correctionResult = correction.result;
+  const correctionProviderMessage = providerStatusFailed
+    ? "Correction provider status is unavailable. Unsafe output still falls back to the original."
+    : providerStatus
+      ? providerStatus.configured
+        ? `${providerStatus.modelId} ready with a ${providerStatus.timeoutMs} ms deadline.`
+        : `Provider is not configured. Missing: ${providerStatus.missing.join(", ")}.`
+      : window.desktopApi?.correction
+        ? "Checking the correction provider."
+        : "Browser diagnostic uses the deterministic fake corrector.";
   const selectedDevice = useMemo(
     () => devices.find((device) => device.deviceId === selectedDeviceId),
     [devices, selectedDeviceId],
@@ -376,11 +488,11 @@ export function PushToTalkPanel() {
       <div className="stt-panel">
         <header className="stt-heading">
           <div>
-            <small>05 · EPIC 2 DIAGNOSTIC</small>
-            <h2 id="stt-heading">Microphone to streaming transcript</h2>
+            <small>05 · EPIC 2 + 3 DIAGNOSTIC</small>
+            <h2 id="stt-heading">Microphone to corrected English</h2>
             <p>
-              Local microphone capture with deterministic fake STT. No audio or
-              transcript leaves this Mac in this diagnostic slice.
+              Audio capture stays local. Final text goes to the configured
+              correction provider only when correction is enabled.
             </p>
           </div>
           <span className={`stt-stage stt-stage-${transcript.stage}`}>
@@ -393,7 +505,7 @@ export function PushToTalkPanel() {
             <span>Physical microphone</span>
             <select
               value={selectedDeviceId}
-              disabled={isCapturing || isFinalizing}
+              disabled={isCapturing || isFinalizing || isCorrecting}
               onChange={(event) => selectDevice(event.target.value)}
             >
               <option value="">Select microphone</option>
@@ -407,7 +519,7 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className="stt-secondary-button"
-            disabled={isCapturing || isFinalizing}
+            disabled={isCapturing || isFinalizing || isCorrecting}
             onClick={() => void loadDevices(true)}
           >
             Grant access and refresh
@@ -445,6 +557,62 @@ export function PushToTalkPanel() {
           </div>
         </div>
 
+        <div className="stt-correction" aria-live="polite">
+          <div className="stt-correction-heading">
+            <div>
+              <span>English correction</span>
+              <p>Grammar and natural wording with semantic safety checks.</p>
+            </div>
+            <span
+              className={`stt-correction-stage stt-correction-stage-${correction.phase}`}
+            >
+              {correctionStageLabel(correction)}
+            </span>
+          </div>
+
+          <label className="stt-correction-toggle">
+            <input
+              type="checkbox"
+              checked={correctionEnabled}
+              disabled={isCapturing || isFinalizing || isCorrecting}
+              onChange={(event) => {
+                correctionPipelineRef.current?.setEnabled(event.target.checked);
+                setCorrectionEnabled(event.target.checked);
+              }}
+            />
+            <span>Correct grammar and natural wording</span>
+          </label>
+          <p className="stt-correction-provider">{correctionProviderMessage}</p>
+
+          <div className="stt-correction-output">
+            <span>Corrected sentence</span>
+            <p>{correctionText(correction)}</p>
+          </div>
+
+          <div className="stt-correction-meta">
+            <span>
+              Outcome:{" "}
+              {correctionResult?.outcome ??
+                (correction.phase === "skipped" ? "bypassed" : "Pending")}
+            </span>
+            <span>
+              Provider latency:{" "}
+              {correctionResult?.providerLatencyMs === undefined
+                ? "Pending"
+                : `${correctionResult.providerLatencyMs} ms`}
+            </span>
+            <span>
+              Prompt: {correctionResult?.promptVersion ?? "correction-v1"}
+            </span>
+            <span>
+              Warnings:{" "}
+              {correctionResult?.warnings.length
+                ? correctionResult.warnings.join(", ")
+                : "None"}
+            </span>
+          </div>
+        </div>
+
         {transcript.stage === "failed" && (
           <p className="stt-error">
             {friendlyCaptureError(transcript.errorCode)}
@@ -455,7 +623,7 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className={`stt-talk-button ${isCapturing ? "is-active" : ""}`}
-            disabled={!selectedDeviceId || isFinalizing}
+            disabled={!selectedDeviceId || isFinalizing || isCorrecting}
             onPointerDown={(event) => {
               event.preventDefault();
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -473,7 +641,7 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className="stt-cancel-button"
-            disabled={!isCapturing && !isFinalizing}
+            disabled={!isCapturing && !isFinalizing && !isCorrecting}
             onClick={cancelPhrase}
           >
             Cancel phrase
