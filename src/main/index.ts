@@ -1,9 +1,18 @@
-import { app, BrowserWindow, ipcMain, systemPreferences } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  shell,
+  systemPreferences,
+} from "electron";
 import { join } from "node:path";
-import type { MicrophonePermissionStatus } from "../shared/audio";
+import { AUDIO_IPC, type MicrophonePermissionStatus } from "../shared/audio";
 import { registerCorrectionIpc } from "./correctionIpc";
 import { registerSttIpc } from "./sttIpc";
 import { registerTtsIpc } from "./ttsIpc";
+
+const MICROPHONE_PRIVACY_SETTINGS_URL =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
 
 function microphoneStatus(): MicrophonePermissionStatus {
   if (process.platform !== "darwin") return "unsupported";
@@ -14,11 +23,21 @@ function microphoneStatus(): MicrophonePermissionStatus {
 }
 
 function registerAudioIpc(): void {
-  ipcMain.handle("audio:get-microphone-permission", () => microphoneStatus());
+  ipcMain.handle(AUDIO_IPC.microphoneStatus, () => microphoneStatus());
 
-  ipcMain.handle("audio:request-microphone-permission", async () => {
+  ipcMain.handle(AUDIO_IPC.requestMicrophone, async () => {
     if (process.platform !== "darwin") return false;
     return systemPreferences.askForMediaAccess("microphone");
+  });
+
+  ipcMain.handle(AUDIO_IPC.openMicrophoneSettings, async () => {
+    if (process.platform !== "darwin") return false;
+    try {
+      await shell.openExternal(MICROPHONE_PRIVACY_SETTINGS_URL);
+      return true;
+    } catch {
+      return false;
+    }
   });
 }
 

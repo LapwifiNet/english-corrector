@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { DesktopApi, MicrophonePermissionStatus } from "../shared/audio";
+import {
+  AUDIO_IPC,
+  type DesktopApi,
+  type MicrophonePermissionStatus,
+} from "../shared/audio";
 import {
   CORRECTION_IPC,
   type CorrectionBridgeResponse,
@@ -21,12 +25,12 @@ const desktopApi: DesktopApi = {
   microphone: {
     getStatus: () =>
       ipcRenderer.invoke(
-        "audio:get-microphone-permission",
+        AUDIO_IPC.microphoneStatus,
       ) as Promise<MicrophonePermissionStatus>,
     request: () =>
-      ipcRenderer.invoke(
-        "audio:request-microphone-permission",
-      ) as Promise<boolean>,
+      ipcRenderer.invoke(AUDIO_IPC.requestMicrophone) as Promise<boolean>,
+    openSettings: () =>
+      ipcRenderer.invoke(AUDIO_IPC.openMicrophoneSettings) as Promise<boolean>,
   },
   stt: {
     getStatus: () =>
