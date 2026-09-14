@@ -93,10 +93,7 @@ test("permission onboarding", async (suite) => {
 
   await suite.test("round trips only the versioned acknowledgement", () => {
     const raw = serializePermissionOnboardingProgress(acknowledged);
-    assert.equal(
-      raw,
-      '{"version":1,"privacyAcknowledged":true}',
-    );
+    assert.equal(raw, '{"version":1,"privacyAcknowledged":true}');
     assert.deepEqual(restorePermissionOnboardingProgress(raw), acknowledged);
   });
 
