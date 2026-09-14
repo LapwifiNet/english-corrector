@@ -7,20 +7,22 @@ import type {
   TtsProviderStatus,
 } from "../../shared/tts";
 import type { TtsEvent } from "./contracts";
-import { ElevenLabsTtsAdapter } from "./elevenLabsTtsAdapter";
+import { RemoteTtsAdapter } from "./elevenLabsTtsAdapter";
 
 const status: TtsProviderStatus = {
-  provider: "elevenlabs",
+  provider: "palabra",
   configured: true,
-  voiceId: "voice-1",
-  modelId: "eleven_flash_v2_5",
+  voiceId: "default_low",
+  modelId: "auto",
   outputFormat: "pcm_24000",
   missing: [],
+  language: "en-us",
+  region: "us",
 };
 const request = {
   utteranceId: "utterance-1",
   text: "Hello world",
-  voiceId: "voice-1",
+  voiceId: "default_low",
 };
 
 class FakeBridge implements TtsBridge {
@@ -52,10 +54,10 @@ class FakeBridge implements TtsBridge {
   }
 }
 
-describe("ElevenLabsTtsAdapter", () => {
+describe("RemoteTtsAdapter", () => {
   it("maps bridge events into the provider-neutral contract", async () => {
     const bridge = new FakeBridge();
-    const adapter = new ElevenLabsTtsAdapter(bridge, status);
+    const adapter = new RemoteTtsAdapter(bridge, status);
     const events: TtsEvent[] = [];
 
     const consume = (async () => {
@@ -87,6 +89,8 @@ describe("ElevenLabsTtsAdapter", () => {
     await consume;
 
     assert.deepEqual(bridge.request, request);
+    assert.equal(adapter.provider, "palabra");
+    assert.equal(adapter.listVoices()[0]?.name, "Palabra · auto");
     assert.deepEqual(
       events.map((event) => event.type),
       ["started", "chunk", "completed"],
@@ -95,7 +99,7 @@ describe("ElevenLabsTtsAdapter", () => {
 
   it("ignores events for another utterance", async () => {
     const bridge = new FakeBridge();
-    const adapter = new ElevenLabsTtsAdapter(bridge, status);
+    const adapter = new RemoteTtsAdapter(bridge, status);
     const events: TtsEvent[] = [];
 
     const consume = (async () => {
@@ -117,7 +121,7 @@ describe("ElevenLabsTtsAdapter", () => {
 
   it("cancels the main-process request when aborted", async () => {
     const bridge = new FakeBridge();
-    const adapter = new ElevenLabsTtsAdapter(bridge, status);
+    const adapter = new RemoteTtsAdapter(bridge, status);
     const controller = new AbortController();
 
     const consume = (async () => {

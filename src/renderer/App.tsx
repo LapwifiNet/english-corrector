@@ -17,7 +17,7 @@ import type {
   UtteranceStage,
 } from "./tts/contracts";
 import { createUtteranceId } from "./tts/contracts";
-import { ElevenLabsTtsAdapter } from "./tts/elevenLabsTtsAdapter";
+import { RemoteTtsAdapter } from "./tts/elevenLabsTtsAdapter";
 import { FakeTtsAdapter } from "./tts/fakeTtsAdapter";
 import { runUtterance } from "./tts/runUtterance";
 
@@ -89,19 +89,19 @@ function friendlyPipelineError(code?: string): string {
     case "unsupported_audio_format":
       return "The synthesizer returned an unsupported audio format.";
     case "provider_not_configured":
-      return "Configure the ElevenLabs API key and voice ID, then restart the app.";
+      return "Configure Palabra first, or ElevenLabs as fallback, then restart the app.";
     case "provider_auth_error":
-      return "ElevenLabs rejected the API key. Check the local environment value.";
+      return "The selected TTS provider rejected the API key. Check the local environment value.";
     case "provider_rate_limited":
-      return "ElevenLabs rate-limited this request. Retry manually after a pause.";
+      return "The selected TTS provider rate-limited this request. Retry manually after a pause.";
     case "provider_request_error":
     case "provider_voice_mismatch":
-      return "ElevenLabs rejected the text, model, or configured voice.";
+      return "The selected TTS provider rejected the text, model, or configured voice.";
     case "provider_unavailable":
     case "provider_http_error":
     case "provider_stream_error":
     case "provider_empty_audio":
-      return "The ElevenLabs audio stream was unavailable or incomplete.";
+      return "The selected TTS audio stream was unavailable or incomplete.";
     default:
       return "The stream failed safely. No automatic retry was made.";
   }
@@ -169,7 +169,14 @@ export function App() {
   const pipelineBusy = ["synthesizing", "buffering", "playing"].includes(
     pipelineStage,
   );
-  const usingNaturalVoice = ttsAdapter.provider === "elevenlabs";
+  const usingNaturalVoice =
+    ttsAdapter.provider === "palabra" || ttsAdapter.provider === "elevenlabs";
+  const providerDisplayName =
+    ttsAdapter.provider === "palabra"
+      ? "Palabra"
+      : ttsAdapter.provider === "elevenlabs"
+        ? "ElevenLabs"
+        : "Fake adapter";
 
   const loadDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -223,11 +230,11 @@ export function App() {
         setProviderStatus(status);
 
         if (status.configured && status.voiceId) {
-          const adapter = new ElevenLabsTtsAdapter(bridge, status);
+          const adapter = new RemoteTtsAdapter(bridge, status);
           setTtsAdapter(adapter);
           setVoiceId(adapter.listVoices()[0]?.id ?? "");
           setPipelineMessage(
-            `ElevenLabs ${status.modelId} is ready for natural speech streaming.`,
+            `${status.provider === "palabra" ? "Palabra" : "ElevenLabs"} ${status.modelId} is ready for natural speech streaming.`,
           );
         }
       })
@@ -437,7 +444,7 @@ export function App() {
     setPipelineStage("synthesizing");
     setPipelineMessage(
       usingNaturalVoice
-        ? "Starting ElevenLabs streaming synthesis."
+        ? `Starting ${providerDisplayName} streaming synthesis.`
         : "Starting deterministic streaming synthesis.",
     );
 
@@ -491,7 +498,7 @@ export function App() {
         <div>
           <p className="eyebrow">
             {usingNaturalVoice
-              ? "EPIC 1 · ELEVENLABS STREAMING TTS"
+              ? `EPIC 1 · ${providerDisplayName.toUpperCase()} STREAMING TTS`
               : "EPIC 1 · STREAMING TTS DIAGNOSTIC"}
           </p>
           <h1>Stream text into your virtual mic.</h1>
@@ -629,7 +636,7 @@ export function App() {
                 <strong>Ordered audio pipeline</strong>
                 <small>
                   {usingNaturalVoice
-                    ? "ElevenLabs PCM to 48 kHz stereo"
+                    ? `${providerDisplayName} PCM to 48 kHz stereo`
                     : "48 kHz stereo internal format"}
                 </small>
               </div>
@@ -672,7 +679,7 @@ export function App() {
                 usingNaturalVoice ? "step-state" : "step-state diagnostic"
               }
             >
-              {usingNaturalVoice ? "ElevenLabs" : "Fake adapter"}
+              {providerDisplayName}
             </span>
           </div>
 
@@ -729,9 +736,11 @@ export function App() {
           <div className="diagnostic-note">
             {usingNaturalVoice ? (
               <>
-                <strong>Natural streaming enabled.</strong> ElevenLabs runs in
-                the Electron main process. The API key is never sent to the
-                renderer.
+                <strong>{providerDisplayName} streaming enabled.</strong>{" "}
+                {providerDisplayName} runs in the Electron main process. The API
+                key is never sent to the renderer.
+                {providerStatus?.provider === "palabra" &&
+                  " Palabra has priority over ElevenLabs."}
               </>
             ) : (
               <>
@@ -739,7 +748,7 @@ export function App() {
                 to deterministic speech-like PCM tones. Configure
                 {providerStatus?.missing.length
                   ? ` ${providerStatus.missing.join(" and ")}`
-                  : " the ElevenLabs environment values"}
+                  : " the Palabra environment values"}
                 , then restart the app to enable natural speech.
               </>
             )}
@@ -819,7 +828,7 @@ export function App() {
         <span>Raw microphone passthrough is off.</span>
         <span>
           {usingNaturalVoice
-            ? "Text is sent to ElevenLabs only when you press Send."
+            ? `Text is sent to ${providerDisplayName} only when you press Send.`
             : "No text or audio leaves this Mac in diagnostic mode."}
         </span>
       </footer>

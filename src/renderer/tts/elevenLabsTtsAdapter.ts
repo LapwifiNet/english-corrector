@@ -14,6 +14,10 @@ function abortError(): DOMException {
   return new DOMException("The operation was aborted.", "AbortError");
 }
 
+function providerName(provider: TtsProviderStatus["provider"]): string {
+  return provider === "palabra" ? "Palabra" : "ElevenLabs";
+}
+
 class AsyncEventQueue {
   private readonly events: TtsEvent[] = [];
   private readonly waiters: Array<{
@@ -62,20 +66,21 @@ function toDomainEvent(event: TtsBridgeEvent): TtsEvent {
   return { ...event, bytes: new Uint8Array(event.bytes) };
 }
 
-export class ElevenLabsTtsAdapter implements TtsAdapter {
-  readonly provider = "elevenlabs";
+export class RemoteTtsAdapter implements TtsAdapter {
+  readonly provider: TtsProviderStatus["provider"];
   private readonly voices: readonly TtsVoice[];
 
   constructor(
     private readonly bridge: TtsBridge,
     private readonly status: TtsProviderStatus,
   ) {
+    this.provider = status.provider;
     this.voices = status.voiceId
       ? [
           {
             id: status.voiceId,
-            name: `ElevenLabs · ${status.modelId}`,
-            locale: "en-US",
+            name: `${providerName(status.provider)} · ${status.modelId}`,
+            locale: status.language ?? "en-US",
           },
         ]
       : [];
@@ -131,3 +136,5 @@ export class ElevenLabsTtsAdapter implements TtsAdapter {
     }
   }
 }
+
+export { RemoteTtsAdapter as ElevenLabsTtsAdapter };
