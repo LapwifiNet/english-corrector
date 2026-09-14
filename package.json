@@ -13,6 +13,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "tsx --test src/main/*.test.ts src/renderer/audio/*.test.ts src/renderer/tts/*.test.ts src/renderer/stt/*.test.ts src/renderer/correction/*.test.ts",
+    "bench:correction": "tsx scripts/correctionBenchmark.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test && npm run build",
