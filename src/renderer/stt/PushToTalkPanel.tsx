@@ -5,6 +5,7 @@ import {
   type AudioDeviceChoice,
   type AudioDeviceDescriptor,
 } from "../audio/deviceState";
+import { StreamingWebAudioSink } from "../audio/webAudioSink";
 import type { CorrectionProviderStatus } from "../../shared/correction";
 import {
   createCorrectionPipeline,
@@ -15,6 +16,17 @@ import {
 import { createCorrectionEngine } from "../correction/correctionEngine";
 import { createFakeCorrector } from "../correction/fakeCorrector";
 import { createIpcCorrectionAdapter } from "../correction/ipcCorrectionAdapter";
+import {
+  createCorrectedSpeechRelay,
+  INITIAL_RELAY_PLAYBACK_SNAPSHOT,
+  isRelayPlaybackBusy,
+  type CorrectedSpeechRelay,
+  type RelayPlaybackSnapshot,
+} from "../relay/correctedSpeechRelay";
+import {
+  createRelayRouteResolver,
+  DiagnosticRelaySink,
+} from "../relay/relayRoute";
 import type {
   PhraseEvent,
   StreamingTranscriber,
@@ -86,6 +98,67 @@ function correctionText(snapshot: CorrectionSnapshot): string {
   }
 }
 
+function relayStageLabel(snapshot: RelayPlaybackSnapshot): string {
+  switch (snapshot.phase) {
+    case "preparing":
+      return "Preparing route";
+    case "synthesizing":
+      return "Synthesizing";
+    case "buffering":
+      return "Buffering";
+    case "playing":
+      return "Playing";
+    case "completed":
+      return "Completed";
+    case "cancelled":
+      return "Cancelled";
+    case "failed":
+      return "Relay failed";
+    default:
+      return "Waiting for correction";
+  }
+}
+
+function relayStatusText(snapshot: RelayPlaybackSnapshot): string {
+  switch (snapshot.phase) {
+    case "preparing":
+      return "Resolving the saved voice and virtual output.";
+    case "synthesizing":
+      return "Generating speech from the safe sentence.";
+    case "buffering":
+      return "Ordering audio chunks before playback.";
+    case "playing":
+      return "Streaming corrected speech once into the virtual output.";
+    case "completed":
+      return "Corrected speech completed without an automatic retry.";
+    case "cancelled":
+      return "TTS, buffer, and output were cancelled.";
+    case "failed":
+      if (snapshot.errorCode === "output_device_required") {
+        return "Select BlackHole as the virtual output in Audio setup first.";
+      }
+      if (snapshot.errorCode === "provider_not_configured") {
+        return "Configure Palabra or ElevenLabs, then restart the desktop app.";
+      }
+      if (snapshot.errorCode === "tts_voice_required") {
+        return "Select a TTS voice before speaking.";
+      }
+      return "The relay failed safely and did not retry playback.";
+    default:
+      return "The next safe sentence will stream automatically after correction.";
+  }
+}
+
+function relayElapsed(
+  snapshot: RelayPlaybackSnapshot,
+  end: "firstChunkAt" | "playbackStartedAt" | "playbackCompletedAt",
+): string {
+  const metrics = snapshot.metrics;
+  const endValue = metrics?.[end];
+  if (!metrics || typeof endValue !== "number") return "Pending";
+  return `${Math.max(0, Math.round(endValue - metrics.requestStartedAt))} ms`;
+}
+
 function stageLabel(stage: TranscriptState["stage"]): string {
   switch (stage) {
     case "capturing":
@@ -155,6 +228,9 @@ export function PushToTalkPanel() {
   const [providerStatus, setProviderStatus] =
     useState<CorrectionProviderStatus | null>(null);
   const [providerStatusFailed, setProviderStatusFailed] = useState(false);
+  const [relay, setRelay] = useState<RelayPlaybackSnapshot>(
+    INITIAL_RELAY_PLAYBACK_SNAPSHOT,
+  );
 
   const mountedRef = useRef(true);
   const correctionPipelineRef = useRef<CorrectionPipeline | null>(null);
@@ -168,6 +244,25 @@ export function PushToTalkPanel() {
       engine,
       onSnapshot: (snapshot) => {
         if (mountedRef.current) setCorrection(snapshot);
+      },
+    });
+  }
+  const relayRef = useRef<CorrectedSpeechRelay | null>(null);
+  if (!relayRef.current) {
+    const ttsBridge = window.desktopApi?.tts ?? null;
+    relayRef.current = createCorrectedSpeechRelay({
+      resolveRoute: createRelayRouteResolver({
+        bridge: ttsBridge,
+        storage: window.localStorage,
+        enumerateDevices: async () =>
+          navigator.mediaDevices?.enumerateDevices
+            ? navigator.mediaDevices.enumerateDevices()
+            : [],
+      }),
+      createSink: () =>
+        ttsBridge ? new StreamingWebAudioSink() : new DiagnosticRelaySink(),
+      onSnapshot: (snapshot) => {
+        if (mountedRef.current) setRelay(snapshot);
       },
     });
   }
@@ -276,7 +371,12 @@ export function PushToTalkPanel() {
   );
 
   const startPhrase = useCallback(async () => {
-    if (correction.phase === "correcting") return;
+    if (
+      correction.phase === "correcting" ||
+      isRelayPlaybackBusy(relayRef.current?.snapshot() ?? relay)
+    ) {
+      return;
+    }
     if (!selectedDeviceId) {
       setDeviceMessage("Select a physical microphone first.");
       return;
@@ -285,7 +385,9 @@ export function PushToTalkPanel() {
     const started = controllerRef.current.press();
     if (!started) return;
     correctionPipelineRef.current?.cancel();
+    relayRef.current?.cancel();
     setCorrection(INITIAL_CORRECTION_SNAPSHOT);
+    setRelay(INITIAL_RELAY_PLAYBACK_SNAPSHOT);
     applyPhraseEvent(started);
 
     const transcriber = transcriberRef.current ?? createTranscriber();
@@ -354,7 +456,13 @@ export function PushToTalkPanel() {
       activeRef.current = null;
       setLevel(0);
     }
-  }, [applyPhraseEvent, correction.phase, finishResources, selectedDeviceId]);
+  }, [
+    applyPhraseEvent,
+    correction.phase,
+    finishResources,
+    relay,
+    selectedDeviceId,
+  ]);
 
   const finishPhrase = useCallback(async () => {
     const ended = controllerRef.current.release();
@@ -374,8 +482,12 @@ export function PushToTalkPanel() {
     const cancelled = controllerRef.current.cancel();
     const correctionWasActive =
       correctionPipelineRef.current?.snapshot().phase === "correcting";
+    const relayWasActive = isRelayPlaybackBusy(
+      relayRef.current?.snapshot() ?? relay,
+    );
     correctionPipelineRef.current?.cancel();
-    if (!cancelled && !correctionWasActive) return;
+    relayRef.current?.cancel();
+    if (!cancelled && !correctionWasActive && !relayWasActive) return;
     if (cancelled) applyPhraseEvent(cancelled);
 
     const active = activeRef.current;
@@ -425,6 +537,7 @@ export function PushToTalkPanel() {
       active?.transcription.cancel();
       void active?.capture?.stop();
       correctionPipelineRef.current?.cancel();
+      relayRef.current?.cancel();
     };
   }, [loadDevices]);
 
@@ -483,6 +596,10 @@ export function PushToTalkPanel() {
     );
   }, [transcript.finalText, transcript.phraseId, transcript.stage]);
 
+  useEffect(() => {
+    void relayRef.current?.submit(correction);
+  }, [correction]);
+
   const selectDevice = (deviceId: string) => {
     setSelectedDeviceId(deviceId);
     localStorage.setItem(INPUT_STORAGE_KEY, deviceId);
@@ -499,6 +616,7 @@ export function PushToTalkPanel() {
   const isCapturing = transcript.stage === "capturing";
   const isFinalizing = transcript.stage === "finalizing";
   const isCorrecting = correction.phase === "correcting";
+  const isRelaying = isRelayPlaybackBusy(relay);
   const correctionResult = correction.result;
   const correctionProviderMessage = providerStatusFailed
     ? "Correction provider status is unavailable. Unsafe output still falls back to the original."
@@ -519,11 +637,11 @@ export function PushToTalkPanel() {
       <div className="stt-panel">
         <header className="stt-heading">
           <div>
-            <small>05 · EPIC 2 + 3 DIAGNOSTIC</small>
-            <h2 id="stt-heading">Microphone to corrected English</h2>
+            <small>05 · EPIC 2 + 3 + 4 RELAY</small>
+            <h2 id="stt-heading">Microphone to corrected speech</h2>
             <p>
-              Audio capture stays local. Final text goes to the configured
-              correction provider only when correction is enabled.
+              Audio capture stays local. Final text may go to the correction
+              provider, then safe speech streams to the saved virtual output.
             </p>
           </div>
           <span className={`stt-stage stt-stage-${transcript.stage}`}>
@@ -536,7 +654,9 @@ export function PushToTalkPanel() {
             <span>Physical microphone</span>
             <select
               value={selectedDeviceId}
-              disabled={isCapturing || isFinalizing || isCorrecting}
+              disabled={
+                isCapturing || isFinalizing || isCorrecting || isRelaying
+              }
               onChange={(event) => selectDevice(event.target.value)}
             >
               <option value="">Select microphone</option>
@@ -550,7 +670,7 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className="stt-secondary-button"
-            disabled={isCapturing || isFinalizing || isCorrecting}
+            disabled={isCapturing || isFinalizing || isCorrecting || isRelaying}
             onClick={() => void loadDevices(true)}
           >
             Grant access and refresh
@@ -605,7 +725,9 @@ export function PushToTalkPanel() {
             <input
               type="checkbox"
               checked={correctionEnabled}
-              disabled={isCapturing || isFinalizing || isCorrecting}
+              disabled={
+                isCapturing || isFinalizing || isCorrecting || isRelaying
+              }
               onChange={(event) => {
                 correctionPipelineRef.current?.setEnabled(event.target.checked);
                 setCorrectionEnabled(event.target.checked);
@@ -642,6 +764,34 @@ export function PushToTalkPanel() {
                 : "None"}
             </span>
           </div>
+
+          <div className="stt-relay">
+            <div className="stt-relay-heading">
+              <div>
+                <span>Corrected speech relay</span>
+                <p>Automatic TTS handoff with one immutable output route.</p>
+              </div>
+              <span
+                className={`stt-relay-stage stt-relay-stage-${relay.phase}`}
+              >
+                {relayStageLabel(relay)}
+              </span>
+            </div>
+            <p className="stt-relay-message">{relayStatusText(relay)}</p>
+            <div className="stt-relay-meta">
+              <span>
+                Provider:{" "}
+                {relay.provider ??
+                  (window.desktopApi?.tts ? "Pending" : "Diagnostic fake")}
+              </span>
+              <span>Voice: {relay.voiceLabel ?? "Pending"}</span>
+              <span>Output: {relay.outputLabel ?? "Pending"}</span>
+              <span>
+                First audio: {relayElapsed(relay, "playbackStartedAt")}
+              </span>
+              <span>Total: {relayElapsed(relay, "playbackCompletedAt")}</span>
+            </div>
+          </div>
         </div>
 
         {transcript.stage === "failed" && (
@@ -654,7 +804,9 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className={`stt-talk-button ${isCapturing ? "is-active" : ""}`}
-            disabled={!selectedDeviceId || isFinalizing || isCorrecting}
+            disabled={
+              !selectedDeviceId || isFinalizing || isCorrecting || isRelaying
+            }
             onPointerDown={(event) => {
               event.preventDefault();
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -672,7 +824,9 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className="stt-cancel-button"
-            disabled={!isCapturing && !isFinalizing && !isCorrecting}
+            disabled={
+              !isCapturing && !isFinalizing && !isCorrecting && !isRelaying
+            }
             onClick={cancelPhrase}
           >
             Cancel phrase
