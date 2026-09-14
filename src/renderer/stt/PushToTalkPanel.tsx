@@ -15,7 +15,12 @@ import {
 import { createCorrectionEngine } from "../correction/correctionEngine";
 import { createFakeCorrector } from "../correction/fakeCorrector";
 import { createIpcCorrectionAdapter } from "../correction/ipcCorrectionAdapter";
-import type { PhraseEvent, TranscriptionSession } from "./contracts";
+import type {
+  PhraseEvent,
+  StreamingTranscriber,
+  TranscriptionSession,
+} from "./contracts";
+import { createDesktopTranscriber } from "./desktopTranscriber";
 import { FakeStreamingTranscriber } from "./fakeTranscriber";
 import {
   BrowserMicrophoneCapture,
@@ -40,6 +45,17 @@ type ActivePhrase = {
   pendingFinish: boolean;
   finishing: boolean;
 };
+
+/**
+ * The desktop build streams audio to the configured provider. A browser
+ * diagnostic, or a desktop build without a key, keeps the deterministic fake.
+ */
+function createTranscriber(): StreamingTranscriber {
+  return createDesktopTranscriber({
+    bridge: window.desktopApi?.stt,
+    fallback: new FakeStreamingTranscriber(),
+  });
+}
 
 function correctionStageLabel(snapshot: CorrectionSnapshot): string {
   switch (snapshot.phase) {
@@ -99,6 +115,18 @@ function friendlyCaptureError(code?: string): string {
       return "The selected microphone is busy in another application.";
     case "microphone_unsupported":
       return "Microphone capture is unavailable in this environment.";
+    case "provider_not_configured":
+      return "Set ASSEMBLYAI_API_KEY to transcribe with the real provider.";
+    case "provider_auth_error":
+      return "The speech provider rejected the configured API key.";
+    case "provider_rate_limited":
+      return "The speech provider is rate limiting this account.";
+    case "provider_request_error":
+      return "The speech provider rejected the audio stream.";
+    case "provider_timeout":
+      return "The speech provider did not return a final transcript in time.";
+    case "provider_unavailable":
+      return "The speech provider could not be reached.";
     default:
       return "The microphone could not be opened safely.";
   }
@@ -144,7 +172,7 @@ export function PushToTalkPanel() {
     });
   }
   const controllerRef = useRef(new PushToTalkController());
-  const transcriberRef = useRef(new FakeStreamingTranscriber());
+  const transcriberRef = useRef<StreamingTranscriber | null>(null);
   const captureFactoryRef = useRef(new BrowserMicrophoneCapture());
   const activeRef = useRef<ActivePhrase | null>(null);
 
@@ -260,11 +288,14 @@ export function PushToTalkPanel() {
     setCorrection(INITIAL_CORRECTION_SNAPSHOT);
     applyPhraseEvent(started);
 
+    const transcriber = transcriberRef.current ?? createTranscriber();
+    transcriberRef.current = transcriber;
+
     const abortController = new AbortController();
     const active: ActivePhrase = {
       phraseId: started.phraseId,
       abortController,
-      transcription: transcriberRef.current.start({
+      transcription: transcriber.start({
         phraseId: started.phraseId,
         signal: abortController.signal,
         onEvent: applyPhraseEvent,
