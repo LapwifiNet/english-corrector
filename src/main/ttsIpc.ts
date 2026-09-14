@@ -5,14 +5,22 @@ import {
   type TtsBridgeRequest,
 } from "../shared/tts";
 import {
-  providerErrorCode,
-  readElevenLabsProviderStatus,
-  readElevenLabsRuntimeConfig,
+  providerErrorCode as elevenLabsProviderErrorCode,
   streamElevenLabsSpeech,
 } from "./elevenLabsClient";
+import {
+  PalabraStreamingClient,
+  palabraProviderErrorCode,
+  type PalabraRuntimeConfig,
+} from "./palabraClient";
+import {
+  readPreferredTtsProviderStatus,
+  readPreferredTtsRuntimeConfig,
+} from "./ttsProvider";
 
 const MAX_TEXT_LENGTH = 280;
 const activeRequests = new Map<string, AbortController>();
+let palabraClient: PalabraStreamingClient | null = null;
 
 function requestKey(senderId: number, utteranceId: string): string {
   return `${senderId}:${utteranceId}`;
@@ -35,8 +43,15 @@ function isRequest(value: unknown): value is TtsBridgeRequest {
   );
 }
 
+function getPalabraClient(
+  config: PalabraRuntimeConfig,
+): PalabraStreamingClient {
+  palabraClient ??= new PalabraStreamingClient(config);
+  return palabraClient;
+}
+
 export function registerTtsIpc(): void {
-  ipcMain.handle(TTS_IPC.status, () => readElevenLabsProviderStatus());
+  ipcMain.handle(TTS_IPC.status, () => readPreferredTtsProviderStatus());
 
   ipcMain.on(TTS_IPC.start, (event: IpcMainEvent, value: unknown) => {
     const fallbackUtteranceId =
@@ -46,8 +61,9 @@ export function registerTtsIpc(): void {
         ? (value as { utteranceId: string }).utteranceId
         : "invalid-utterance";
     const emit = (payload: TtsBridgeEvent) => {
-      if (!event.sender.isDestroyed())
+      if (!event.sender.isDestroyed()) {
         event.sender.send(TTS_IPC.event, payload);
+      }
     };
 
     if (!isRequest(value)) {
@@ -70,8 +86,8 @@ export function registerTtsIpc(): void {
       return;
     }
 
-    const config = readElevenLabsRuntimeConfig();
-    if (!config) {
+    const runtime = readPreferredTtsRuntimeConfig();
+    if (!runtime) {
       emit({
         type: "failed",
         utteranceId: request.utteranceId,
@@ -85,18 +101,30 @@ export function registerTtsIpc(): void {
     const handleDestroyed = () => controller.abort();
     event.sender.once("destroyed", handleDestroyed);
 
-    void streamElevenLabsSpeech({
-      request,
-      config,
-      signal: controller.signal,
-      emit,
-    })
+    const streaming =
+      runtime.provider === "palabra"
+        ? getPalabraClient(runtime.config).streamSpeech({
+            request,
+            signal: controller.signal,
+            emit,
+          })
+        : streamElevenLabsSpeech({
+            request,
+            config: runtime.config,
+            signal: controller.signal,
+            emit,
+          });
+
+    void streaming
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         emit({
           type: "failed",
           utteranceId: request.utteranceId,
-          code: providerErrorCode(error),
+          code:
+            runtime.provider === "palabra"
+              ? palabraProviderErrorCode(error)
+              : elevenLabsProviderErrorCode(error),
         });
       })
       .finally(() => {

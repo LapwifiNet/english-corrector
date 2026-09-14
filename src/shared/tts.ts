@@ -5,13 +5,20 @@ export const TTS_IPC = {
   event: "tts:event",
 } as const;
 
+export type TtsProviderName = "palabra" | "elevenlabs";
+
+export type TtsProviderEnvironmentVariable =
+  "PALABRA_API_KEY" | "ELEVENLABS_API_KEY" | "ELEVENLABS_VOICE_ID";
+
 export type TtsProviderStatus = {
-  provider: "elevenlabs";
+  provider: TtsProviderName;
   configured: boolean;
   voiceId: string | null;
   modelId: string;
   outputFormat: "pcm_24000";
-  missing: Array<"ELEVENLABS_API_KEY" | "ELEVENLABS_VOICE_ID">;
+  missing: TtsProviderEnvironmentVariable[];
+  language?: string;
+  region?: "us" | "eu";
 };
 
 export type TtsBridgeRequest = {
