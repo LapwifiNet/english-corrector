@@ -6,11 +6,7 @@ import {
 import type { CorrectionEngine } from "./correctionEngine";
 
 export type CorrectionPhase =
-  | "idle"
-  | "correcting"
-  | "done"
-  | "skipped"
-  | "cancelled";
+  "idle" | "correcting" | "done" | "skipped" | "cancelled";
 
 export type CorrectionSnapshot = {
   phase: CorrectionPhase;
