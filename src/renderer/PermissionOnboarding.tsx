@@ -183,7 +183,9 @@ function DesktopPermissionOnboarding({
               <li>
                 Raw microphone audio stays in memory and is not saved to disk.
               </li>
-              <li>Transcript and corrected text stay in the current session.</li>
+              <li>
+                Transcript and corrected text stay in the current session.
+              </li>
               <li>Provider credentials stay outside the renderer.</li>
             </ul>
             <div className="onboarding-actions">
@@ -304,9 +306,7 @@ function DesktopPermissionOnboarding({
   );
 }
 
-export function PermissionOnboarding({
-  children,
-}: PermissionOnboardingProps) {
+export function PermissionOnboarding({ children }: PermissionOnboardingProps) {
   const bridge = window.desktopApi?.microphone;
   if (!bridge) return <>{children}</>;
 

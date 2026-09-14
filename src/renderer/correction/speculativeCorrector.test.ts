@@ -20,11 +20,9 @@ function fakeEngine(): { engine: CorrectionEngine; calls: Call[] } {
     correct: (request, options) =>
       new Promise<CorrectionResult>((resolve, reject) => {
         const signal = options?.signal;
-        signal?.addEventListener(
-          "abort",
-          () => reject(new Error("aborted")),
-          { once: true },
-        );
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
         calls.push({
           request,
           signal,

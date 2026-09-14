@@ -80,16 +80,19 @@ test("permission onboarding", async (suite) => {
     }
   });
 
-  await suite.test("keeps unknown and unsupported environments explicit", () => {
-    assert.equal(
-      permissionOnboardingStep("unknown", acknowledged),
-      "checking",
-    );
-    assert.equal(
-      permissionOnboardingStep("unsupported", acknowledged),
-      "unsupported",
-    );
-  });
+  await suite.test(
+    "keeps unknown and unsupported environments explicit",
+    () => {
+      assert.equal(
+        permissionOnboardingStep("unknown", acknowledged),
+        "checking",
+      );
+      assert.equal(
+        permissionOnboardingStep("unsupported", acknowledged),
+        "unsupported",
+      );
+    },
+  );
 
   await suite.test("round trips only the versioned acknowledgement", () => {
     const raw = serializePermissionOnboardingProgress(acknowledged);
@@ -97,22 +100,25 @@ test("permission onboarding", async (suite) => {
     assert.deepEqual(restorePermissionOnboardingProgress(raw), acknowledged);
   });
 
-  await suite.test("falls back safely for malformed or stale local data", () => {
-    assert.equal(
-      restorePermissionOnboardingProgress("not-json"),
-      INITIAL_PERMISSION_ONBOARDING_PROGRESS,
-    );
-    assert.equal(
-      restorePermissionOnboardingProgress(
-        '{"version":0,"privacyAcknowledged":true}',
-      ),
-      INITIAL_PERMISSION_ONBOARDING_PROGRESS,
-    );
-    assert.equal(
-      restorePermissionOnboardingProgress(
-        '{"version":1,"privacyAcknowledged":"yes"}',
-      ),
-      INITIAL_PERMISSION_ONBOARDING_PROGRESS,
-    );
-  });
+  await suite.test(
+    "falls back safely for malformed or stale local data",
+    () => {
+      assert.equal(
+        restorePermissionOnboardingProgress("not-json"),
+        INITIAL_PERMISSION_ONBOARDING_PROGRESS,
+      );
+      assert.equal(
+        restorePermissionOnboardingProgress(
+          '{"version":0,"privacyAcknowledged":true}',
+        ),
+        INITIAL_PERMISSION_ONBOARDING_PROGRESS,
+      );
+      assert.equal(
+        restorePermissionOnboardingProgress(
+          '{"version":1,"privacyAcknowledged":"yes"}',
+        ),
+        INITIAL_PERMISSION_ONBOARDING_PROGRESS,
+      );
+    },
+  );
 });

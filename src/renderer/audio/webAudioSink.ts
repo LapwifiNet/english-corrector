@@ -61,9 +61,7 @@ async function openRig(outputDeviceId: string): Promise<OutputRig> {
 
   if (!audio.setSinkId) {
     await context.close();
-    throw new Error(
-      "Selected output routing is unavailable in this runtime.",
-    );
+    throw new Error("Selected output routing is unavailable in this runtime.");
   }
 
   audio.autoplay = true;
