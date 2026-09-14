@@ -9,6 +9,10 @@ export const DEFAULT_STREAMING_HOST = "streaming.assemblyai.com";
 export const TOKEN_TTL_SECONDS = 60;
 export const DEFAULT_FINALIZE_TIMEOUT_MS = 2_000;
 export const MAX_QUEUED_CHUNKS = 200;
+/** The provider rejects binary frames outside 50 ms to 1000 ms of audio. */
+export const MIN_CHUNK_MS = 50;
+export const MAX_CHUNK_MS = 1_000;
+export const CHUNK_MS = 50;
 
 export type AssemblyAiConfig = {
   apiKey: string;
@@ -203,6 +207,64 @@ export function averageWordConfidence(turn: StreamingTurn): number | undefined {
   return total / values.length;
 }
 
+export function pcmByteLength(sampleRate: number, durationMs: number): number {
+  const bytes = Math.round((sampleRate * 2 * durationMs) / 1_000);
+  return bytes % 2 === 0 ? bytes : bytes + 1;
+}
+
+export type PcmChunker = {
+  push: (pcm: ArrayBuffer) => ArrayBuffer[];
+  flush: () => ArrayBuffer | null;
+};
+
+/**
+ * The microphone hands over frames sized by the audio graph, which is below
+ * the provider minimum at 48 kHz. Audio is regrouped here so every binary
+ * frame carries an accepted duration, and the tail of a phrase is padded with
+ * silence instead of being dropped.
+ */
+export function createPcmChunker(args: {
+  sampleRate: number;
+  chunkMs?: number;
+}): PcmChunker {
+  const minBytes = pcmByteLength(args.sampleRate, MIN_CHUNK_MS);
+  const requestedMs = Math.min(args.chunkMs ?? CHUNK_MS, MAX_CHUNK_MS);
+  const chunkBytes = Math.max(
+    minBytes,
+    pcmByteLength(args.sampleRate, requestedMs),
+  );
+  let pending = new Uint8Array(0);
+
+  return {
+    push: (pcm) => {
+      if (pcm.byteLength === 0) return [];
+
+      const incoming = new Uint8Array(pcm);
+      const merged = new Uint8Array(pending.byteLength + incoming.byteLength);
+      merged.set(pending, 0);
+      merged.set(incoming, pending.byteLength);
+
+      const ready: ArrayBuffer[] = [];
+      let offset = 0;
+      while (merged.byteLength - offset >= chunkBytes) {
+        ready.push(merged.slice(offset, offset + chunkBytes).buffer);
+        offset += chunkBytes;
+      }
+
+      pending = merged.slice(offset);
+      return ready;
+    },
+    flush: () => {
+      if (pending.byteLength === 0) return null;
+
+      const tail = new Uint8Array(Math.max(pending.byteLength, minBytes));
+      tail.set(pending, 0);
+      pending = new Uint8Array(0);
+      return tail.buffer;
+    },
+  };
+}
+
 export type SttSessionEvents = {
   onPartial: (text: string) => void;
   onFinal: (text: string, confidence?: number) => void;
@@ -235,6 +297,7 @@ export function startAssemblyAiSession(args: {
   const { config, events } = args;
   const finals = new Map<number, FinalTurn>();
   const queue: ArrayBuffer[] = [];
+  const chunker = createPcmChunker({ sampleRate: config.sampleRate });
 
   let socket: SttWebSocket | null = null;
   let isOpen = false;
@@ -355,7 +418,29 @@ export function startAssemblyAiSession(args: {
       return;
     }
 
-    if (payload.type === "Error") settleError("provider_request_error");
+    if (payload.type === "Error") {
+      const detail = (payload as { error?: unknown }).error;
+      if (typeof detail === "string") {
+        console.error(`[stt] provider rejected the stream: ${detail}`);
+      }
+      settleError("provider_request_error");
+    }
+  }
+
+  function sendAudio(chunk: ArrayBuffer): void {
+    if (settled || cancelled) return;
+
+    if (socket && isOpen) {
+      try {
+        socket.send(chunk);
+      } catch {
+        settleError("provider_unavailable");
+      }
+      return;
+    }
+
+    if (queue.length >= MAX_QUEUED_CHUNKS) queue.shift();
+    queue.push(chunk);
   }
 
   function sendForceEndpoint(): void {
@@ -413,8 +498,12 @@ export function startAssemblyAiSession(args: {
 
     created.addEventListener("message", (event) => handleMessage(event.data));
 
-    created.addEventListener("close", () => {
+    created.addEventListener("close", (event) => {
       isOpen = false;
+      const code = typeof event.code === "number" ? event.code : undefined;
+      if (code !== undefined && code !== 1_000) {
+        console.error(`[stt] streaming socket closed with code ${code}`);
+      }
       if (finishing) settleFinal();
       else settleError("provider_unavailable");
     });
@@ -426,23 +515,14 @@ export function startAssemblyAiSession(args: {
 
   return {
     write: (pcm) => {
-      if (settled || cancelled || pcm.byteLength === 0) return;
-
-      if (socket && isOpen) {
-        try {
-          socket.send(pcm);
-        } catch {
-          settleError("provider_unavailable");
-        }
-        return;
-      }
-
-      if (queue.length >= MAX_QUEUED_CHUNKS) queue.shift();
-      queue.push(pcm);
+      if (settled || cancelled) return;
+      for (const chunk of chunker.push(pcm)) sendAudio(chunk);
     },
     finish: () => {
       if (settled || cancelled || finishing) return;
       finishing = true;
+      const tail = chunker.flush();
+      if (tail) sendAudio(tail);
       sendForceEndpoint();
       finalizeTimer = setTimeout(settleFinal, config.finalizeTimeoutMs);
     },
