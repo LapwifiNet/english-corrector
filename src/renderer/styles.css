@@ -280,7 +280,8 @@ h3 {
 .text-field > span,
 .text-field > small,
 .speech-controls label,
-.speech-controls label > span {
+.speech-controls label > span,
+.voice-help {
   display: block;
 }
 
@@ -302,8 +303,16 @@ h3 {
   color: var(--text);
 }
 
-.device-form small {
+.device-form small,
+.voice-help {
   margin-top: 7px;
+}
+
+.voice-help {
+  min-height: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .warning-box {
@@ -454,7 +463,7 @@ h3 {
 
 .speech-controls {
   display: grid;
-  grid-template-columns: minmax(170px, 0.72fr) minmax(280px, 1.28fr);
+  grid-template-columns: minmax(170px, 0.72fr) minmax(320px, 1.28fr);
   gap: 16px;
   align-items: end;
   margin-top: 18px;
@@ -462,7 +471,7 @@ h3 {
 
 .button-group {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 9px;
 }
 
@@ -515,6 +524,10 @@ h3 {
 
 .cancel-button {
   min-width: 90px;
+}
+
+.voice-preview-button {
+  white-space: nowrap;
 }
 
 .diagnostic-note {
