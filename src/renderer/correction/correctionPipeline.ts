@@ -82,7 +82,6 @@ export class CorrectionPipeline {
     const originalText = finalText.trim();
     if (this.submittedPhraseIds.has(phraseId)) return this.current;
     this.remember(phraseId);
-
     if (originalText.length === 0) {
       return this.publish({
         phase: "skipped",
