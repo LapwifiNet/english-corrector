@@ -29,7 +29,8 @@ describe("createOrderedPlaybackQueue", () => {
       },
     });
     await queue.settled();
-    assert.deepEqual(order, []);
+    // A bare [] narrows order to never[] through the assert type predicate.
+    assert.equal(order.length, 0);
 
     queue.enqueue({
       phraseId: "a",
