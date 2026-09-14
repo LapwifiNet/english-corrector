@@ -1,7 +1,11 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  rendererBuildMetadata,
+  resolveReleaseProfile,
+} from "./releaseProfiles.mjs";
 
 const require = createRequire(import.meta.url);
 const { build } = require("esbuild");
@@ -9,6 +13,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const nodePaths = (process.env.NODE_PATH ?? "")
   .split(delimiter)
   .filter(Boolean);
+const releaseProfile = resolveReleaseProfile(
+  process.env.RELEASE_PROFILE ?? "development",
+  process.env,
+);
 
 await rm(resolve(root, "dist"), { recursive: true, force: true });
 await rm(resolve(root, "dist-electron"), { recursive: true, force: true });
@@ -72,3 +80,16 @@ await Promise.all([
     resolve(root, "dist/renderer/pushToTalk.css"),
   ),
 ]);
+
+await writeFile(
+  resolve(root, "dist/release-profile.json"),
+  `${JSON.stringify(
+    {
+      ...releaseProfile,
+      renderer: rendererBuildMetadata(releaseProfile),
+    },
+    null,
+    2,
+  )}\n`,
+  "utf8",
+);
