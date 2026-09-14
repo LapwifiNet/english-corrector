@@ -3,6 +3,8 @@ import {
   TTS_IPC,
   type TtsBridgeEvent,
   type TtsBridgeRequest,
+  type TtsProviderStatus,
+  type TtsVoiceCatalog,
 } from "../shared/tts";
 import {
   providerErrorCode as elevenLabsProviderErrorCode,
@@ -13,6 +15,7 @@ import {
   palabraProviderErrorCode,
   type PalabraRuntimeConfig,
 } from "./palabraClient";
+import { listPalabraVoices } from "./palabraVoices";
 import {
   readPreferredTtsProviderStatus,
   readPreferredTtsRuntimeConfig,
@@ -24,6 +27,30 @@ let palabraClient: PalabraStreamingClient | null = null;
 
 function requestKey(senderId: number, utteranceId: string): string {
   return `${senderId}:${utteranceId}`;
+}
+
+function configuredVoiceCatalog(status: TtsProviderStatus): TtsVoiceCatalog {
+  return {
+    provider: status.provider,
+    voices: status.voiceId
+      ? [
+          {
+            id: status.voiceId,
+            name:
+              status.provider === "palabra"
+                ? "Configured Palabra voice"
+                : `ElevenLabs · ${status.modelId}`,
+            locale: status.language ?? "en-US",
+            category:
+              status.provider === "palabra" &&
+              (status.voiceId === "default_low" ||
+                status.voiceId === "default_high")
+                ? "default"
+                : "configured",
+          },
+        ]
+      : [],
+  };
 }
 
 function isRequest(value: unknown): value is TtsBridgeRequest {
@@ -52,6 +79,19 @@ function getPalabraClient(
 
 export function registerTtsIpc(): void {
   ipcMain.handle(TTS_IPC.status, () => readPreferredTtsProviderStatus());
+  ipcMain.handle(TTS_IPC.voices, async () => {
+    const status = readPreferredTtsProviderStatus();
+    const runtime = readPreferredTtsRuntimeConfig();
+
+    if (runtime?.provider === "palabra") {
+      return listPalabraVoices({
+        config: runtime.config,
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
+
+    return configuredVoiceCatalog(status);
+  });
 
   ipcMain.on(TTS_IPC.start, (event: IpcMainEvent, value: unknown) => {
     const fallbackUtteranceId =

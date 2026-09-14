@@ -134,6 +134,7 @@ describe("Palabra client", () => {
       text: "Hello world",
       generation_id: "utterance-1",
       is_eos: true,
+      voice_options: { voice_id: "default_low" },
     });
 
     socket.message({
@@ -235,7 +236,11 @@ describe("Palabra client", () => {
     });
     await first;
 
-    const secondRequest = { ...request, utteranceId: "utterance-2" };
+    const secondRequest = {
+      ...request,
+      utteranceId: "utterance-2",
+      voiceId: "custom-voice-1",
+    };
     const second = client.streamSpeech({
       request: secondRequest,
       signal: new AbortController().signal,
@@ -258,5 +263,8 @@ describe("Palabra client", () => {
         .length,
       1,
     );
+    assert.deepEqual(JSON.parse(socket.sent.at(-1) ?? "null").voice_options, {
+      voice_id: "custom-voice-1",
+    });
   });
 });

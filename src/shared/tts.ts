@@ -1,5 +1,6 @@
 export const TTS_IPC = {
   status: "tts:get-provider-status",
+  voices: "tts:list-voices",
   start: "tts:start",
   cancel: "tts:cancel",
   event: "tts:event",
@@ -19,6 +20,22 @@ export type TtsProviderStatus = {
   missing: TtsProviderEnvironmentVariable[];
   language?: string;
   region?: "us" | "eu";
+};
+
+export type TtsVoiceCategory = "default" | "builtin" | "custom" | "configured";
+
+export type TtsVoiceSummary = {
+  id: string;
+  name: string;
+  locale: string;
+  category: TtsVoiceCategory;
+  description?: string;
+};
+
+export type TtsVoiceCatalog = {
+  provider: TtsProviderName;
+  voices: TtsVoiceSummary[];
+  warningCode?: string;
 };
 
 export type TtsBridgeRequest = {
@@ -55,6 +72,7 @@ export type TtsBridgeEvent =
 
 export type TtsBridge = {
   getStatus: () => Promise<TtsProviderStatus>;
+  getVoices: () => Promise<TtsVoiceCatalog>;
   start: (request: TtsBridgeRequest) => void;
   cancel: (utteranceId: string) => void;
   onEvent: (listener: (event: TtsBridgeEvent) => void) => () => void;

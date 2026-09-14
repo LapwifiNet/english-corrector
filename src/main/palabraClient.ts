@@ -197,10 +197,10 @@ export class PalabraStreamingClient {
         "Text must contain between 1 and 280 characters.",
       );
     }
-    if (options.request.voiceId !== this.config.voiceId) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.request.voiceId)) {
       throw new PalabraProviderError(
         "provider_voice_mismatch",
-        "The requested voice does not match the configured voice.",
+        "The requested voice identifier is invalid.",
       );
     }
     if (this.active) {
@@ -267,6 +267,9 @@ export class PalabraStreamingClient {
             text,
             generation_id: generationId,
             is_eos: true,
+            voice_options: {
+              voice_id: options.request.voiceId,
+            },
           }),
         );
       } catch (error) {

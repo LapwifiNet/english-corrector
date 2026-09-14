@@ -4,6 +4,7 @@ import {
   TTS_IPC,
   type TtsBridgeEvent,
   type TtsProviderStatus,
+  type TtsVoiceCatalog,
 } from "../shared/tts";
 
 const desktopApi: DesktopApi = {
@@ -20,6 +21,8 @@ const desktopApi: DesktopApi = {
   tts: {
     getStatus: () =>
       ipcRenderer.invoke(TTS_IPC.status) as Promise<TtsProviderStatus>,
+    getVoices: () =>
+      ipcRenderer.invoke(TTS_IPC.voices) as Promise<TtsVoiceCatalog>,
     start: (request) => ipcRenderer.send(TTS_IPC.start, request),
     cancel: (utteranceId) => ipcRenderer.send(TTS_IPC.cancel, utteranceId),
     onEvent: (listener) => {
