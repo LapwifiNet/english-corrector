@@ -63,4 +63,8 @@ await Promise.all([
     resolve(root, "src/renderer/styles.css"),
     resolve(root, "dist/renderer/styles.css"),
   ),
+  copyFile(
+    resolve(root, "src/renderer/palabraSettings.css"),
+    resolve(root, "dist/renderer/palabraSettings.css"),
+  ),
 ]);

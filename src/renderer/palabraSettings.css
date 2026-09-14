@@ -1,0 +1,324 @@
+.standalone-palabra-settings {
+  width: min(1180px, calc(100% - 48px));
+  margin: 0 auto 48px;
+}
+
+.config-menu {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.config-menu > details > summary {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 22px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.config-menu > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-menu > details > summary small,
+.config-menu > details > summary strong {
+  display: block;
+}
+
+.config-menu > details > summary small {
+  margin-bottom: 5px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.config-menu > details > summary strong {
+  font-size: 18px;
+}
+
+.config-summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.config-menu-body {
+  display: grid;
+  gap: 16px;
+  padding: 0 22px 22px;
+}
+
+.config-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.config-intro h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.config-intro p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.config-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.secondary-button,
+.compact-button {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.config-menu fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.config-menu legend {
+  padding: 0 7px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.config-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.config-grid.three-columns,
+.config-grid.ws-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.config-grid.ws-grid {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.config-grid label,
+.config-grid label > span,
+.config-grid label > small,
+.config-readout span,
+.config-readout strong,
+.config-readout small {
+  display: block;
+}
+
+.config-grid label > span,
+.config-readout > span {
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.config-grid input:not([type="checkbox"]),
+.config-grid select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid #d8d6d3;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.config-grid label > small,
+.config-readout small {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.config-readout {
+  min-height: 72px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.config-readout strong {
+  min-height: 24px;
+  line-height: 24px;
+}
+
+.toggle-field {
+  display: flex !important;
+  min-height: 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.toggle-field input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.toggle-field > span,
+.toggle-field > small {
+  margin: 0 !important;
+}
+
+.toggle-field > small {
+  margin-left: auto !important;
+  text-align: right;
+}
+
+.compact-toggle {
+  min-height: 44px;
+}
+
+.span-two {
+  grid-column: span 2;
+}
+
+.translation-list {
+  display: grid;
+  gap: 12px;
+}
+
+.translation-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.translation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.text-button {
+  min-height: auto;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+.add-target-button {
+  margin-top: 12px;
+}
+
+.message-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.config-json {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #202225;
+  color: white;
+}
+
+.config-json > summary {
+  padding: 13px 15px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.config-json pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 0 15px 15px;
+  color: rgba(255, 255, 255, 0.78);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+@media (max-width: 860px) {
+  .config-grid.three-columns,
+  .config-grid.ws-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .standalone-palabra-settings {
+    width: min(100% - 24px, 1180px);
+    margin-bottom: 24px;
+  }
+
+  .config-menu > details > summary,
+  .config-intro {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .config-menu-body {
+    padding: 0 14px 14px;
+  }
+
+  .config-grid.three-columns,
+  .config-grid.ws-grid,
+  .message-type-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-two {
+    grid-column: auto;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .config-grid input:not([type="checkbox"]),
+  .config-grid select {
+    border-color: var(--border);
+  }
+}
