@@ -6,7 +6,11 @@ import {
 import type { CorrectionEngine } from "./correctionEngine";
 
 export type CorrectionPhase =
-  "idle" | "correcting" | "done" | "skipped" | "cancelled";
+  | "idle"
+  | "correcting"
+  | "done"
+  | "skipped"
+  | "cancelled";
 
 export type CorrectionSnapshot = {
   phase: CorrectionPhase;
@@ -49,6 +53,7 @@ export class CorrectionPipeline {
   private current: CorrectionSnapshot = INITIAL_CORRECTION_SNAPSHOT;
   private activePhraseId: PhraseId | null = null;
   private activeController: AbortController | null = null;
+  private readonly submittedPhraseIds = new Set<PhraseId>();
   private enabled: boolean;
 
   constructor(private readonly deps: CorrectionPipelineDeps) {
@@ -75,6 +80,9 @@ export class CorrectionPipeline {
     finalText: string,
   ): Promise<CorrectionSnapshot> {
     const originalText = finalText.trim();
+    if (this.submittedPhraseIds.has(phraseId)) return this.current;
+    this.remember(phraseId);
+
     if (originalText.length === 0) {
       return this.publish({
         phase: "skipped",
@@ -172,6 +180,13 @@ export class CorrectionPipeline {
   private clearActive(): void {
     this.activePhraseId = null;
     this.activeController = null;
+  }
+
+  private remember(phraseId: PhraseId): void {
+    this.submittedPhraseIds.add(phraseId);
+    if (this.submittedPhraseIds.size <= 128) return;
+    const oldest = this.submittedPhraseIds.values().next().value;
+    if (oldest) this.submittedPhraseIds.delete(oldest);
   }
 
   private publish(snapshot: CorrectionSnapshot): CorrectionSnapshot {

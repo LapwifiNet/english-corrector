@@ -168,4 +168,22 @@ describe("correction pipeline", () => {
     assert.equal(pipeline.snapshot().phraseId, "phrase-2");
     assert.equal(pipeline.snapshot().phase, "done");
   });
+
+  it("calls the engine once when a final transcript is duplicated", async () => {
+    const adapter = createFakeCorrector({
+      type: "fixed",
+      output: "He goes to the office.",
+    });
+    const { pipeline, snapshots } = pipelineWith(adapter);
+
+    const first = await pipeline.submit("phrase-1", "he go to the office");
+    const duplicate = await pipeline.submit("phrase-1", "he go to the office");
+
+    assert.equal(adapter.callCount, 1);
+    assert.equal(duplicate, first);
+    assert.deepEqual(
+      snapshots.map((snapshot) => snapshot.phase),
+      ["correcting", "done"],
+    );
+  });
 });
