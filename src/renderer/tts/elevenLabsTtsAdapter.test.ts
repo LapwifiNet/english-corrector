@@ -5,6 +5,7 @@ import type {
   TtsBridgeEvent,
   TtsBridgeRequest,
   TtsProviderStatus,
+  TtsVoiceCatalog,
 } from "../../shared/tts";
 import type { TtsEvent } from "./contracts";
 import { RemoteTtsAdapter } from "./elevenLabsTtsAdapter";
@@ -32,6 +33,20 @@ class FakeBridge implements TtsBridge {
 
   async getStatus(): Promise<TtsProviderStatus> {
     return status;
+  }
+
+  async getVoices(): Promise<TtsVoiceCatalog> {
+    return {
+      provider: "palabra",
+      voices: [
+        {
+          id: "custom-1",
+          name: "My custom voice",
+          locale: "en",
+          category: "custom",
+        },
+      ],
+    };
   }
 
   start(requestValue: TtsBridgeRequest): void {
@@ -95,6 +110,21 @@ describe("RemoteTtsAdapter", () => {
       events.map((event) => event.type),
       ["started", "chunk", "completed"],
     );
+  });
+
+  it("uses a safely loaded voice catalog", async () => {
+    const bridge = new FakeBridge();
+    const catalog = await bridge.getVoices();
+    const adapter = new RemoteTtsAdapter(bridge, status, catalog.voices);
+
+    assert.deepEqual(adapter.listVoices(), [
+      {
+        id: "custom-1",
+        name: "My custom voice",
+        locale: "en",
+        category: "custom",
+      },
+    ]);
   });
 
   it("ignores events for another utterance", async () => {

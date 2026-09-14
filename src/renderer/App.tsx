@@ -9,10 +9,14 @@ import {
   type AudioDeviceDescriptor,
 } from "./audio/deviceState";
 import { createThreeToneWavBlob } from "./audio/testFixture";
-import { StreamingWebAudioSink } from "./audio/webAudioSink";
+import {
+  StreamingWebAudioSink,
+  SYSTEM_DEFAULT_OUTPUT_ID,
+} from "./audio/webAudioSink";
 import type {
   PipelineSnapshot,
   TtsAdapter,
+  TtsVoice,
   UtteranceMetrics,
   UtteranceStage,
 } from "./tts/contracts";
@@ -29,8 +33,11 @@ type SinkSelectableAudio = HTMLAudioElement & {
 
 const INPUT_STORAGE_KEY = "english-corrector.input-device";
 const OUTPUT_STORAGE_KEY = "english-corrector.output-device";
+const VOICE_STORAGE_KEY = "english-corrector.tts-voice";
 const DEFAULT_DIAGNOSTIC_TEXT =
   "Hello. This is the English Corrector streaming audio diagnostic.";
+const VOICE_PREVIEW_TEXT =
+  "Hello. This is a preview of the selected English voice.";
 const PIPELINE_STAGES: UtteranceStage[] = [
   "synthesizing",
   "buffering",
@@ -127,6 +134,20 @@ function stageClass(current: UtteranceStage, item: UtteranceStage): string {
   return "pipeline-stage";
 }
 
+function voiceOptionLabel(voice: TtsVoice): string {
+  const category =
+    voice.category === "custom"
+      ? "Custom"
+      : voice.category === "builtin"
+        ? "Built-in"
+        : voice.category === "default"
+          ? "Default"
+          : voice.category === "configured"
+            ? "Configured"
+            : null;
+  return category ? `${voice.name} · ${category}` : voice.name;
+}
+
 function StatusDot({ ready }: { ready: boolean }) {
   return (
     <span className={ready ? "status-dot ready" : "status-dot"} aria-hidden />
@@ -151,6 +172,10 @@ export function App() {
   );
   const [diagnosticText, setDiagnosticText] = useState(DEFAULT_DIAGNOSTIC_TEXT);
   const [voiceId, setVoiceId] = useState(voices[0]?.id ?? "");
+  const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
+  const [voiceCatalogMessage, setVoiceCatalogMessage] = useState(
+    "The configured voice is available while the catalog loads.",
+  );
   const [pipelineStage, setPipelineStage] = useState<UtteranceStage>("idle");
   const [pipelineMetrics, setPipelineMetrics] =
     useState<UtteranceMetrics | null>(null);
@@ -165,6 +190,7 @@ export function App() {
   const utteranceController = useRef<AbortController | null>(null);
   const utteranceSink = useRef<StreamingWebAudioSink | null>(null);
   const utteranceOutput = useRef<string | null>(null);
+  const activeRunMode = useRef<"route" | "preview">("route");
 
   const pipelineBusy = ["synthesizing", "buffering", "playing"].includes(
     pipelineStage,
@@ -177,6 +203,7 @@ export function App() {
       : ttsAdapter.provider === "elevenlabs"
         ? "ElevenLabs"
         : "Fake adapter";
+  const selectedVoice = voices.find((voice) => voice.id === voiceId);
 
   const loadDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -222,28 +249,65 @@ export function App() {
     let mounted = true;
     const bridge = window.desktopApi?.tts;
     if (!bridge) return () => undefined;
+    const providerBridge = bridge;
 
-    void bridge
-      .getStatus()
-      .then((status) => {
+    async function initializeProvider() {
+      try {
+        const status = await providerBridge.getStatus();
         if (!mounted) return;
         setProviderStatus(status);
 
         if (status.configured && status.voiceId) {
-          const adapter = new RemoteTtsAdapter(bridge, status);
+          setVoiceCatalogLoading(true);
+          let catalog;
+          try {
+            catalog = await providerBridge.getVoices();
+          } catch {
+            catalog = {
+              provider: status.provider,
+              voices: [],
+              warningCode: "provider_unavailable",
+            };
+          }
+          if (!mounted) return;
+
+          const adapter = new RemoteTtsAdapter(
+            providerBridge,
+            status,
+            catalog.voices,
+          );
+          const availableVoices = adapter.listVoices();
+          const savedVoiceId = localStorage.getItem(VOICE_STORAGE_KEY);
+          const preferredVoice =
+            availableVoices.find((voice) => voice.id === savedVoiceId) ??
+            availableVoices.find((voice) => voice.id === status.voiceId) ??
+            availableVoices[0];
           setTtsAdapter(adapter);
-          setVoiceId(adapter.listVoices()[0]?.id ?? "");
+          setVoiceId(preferredVoice?.id ?? "");
+          setVoiceCatalogMessage(
+            catalog.warningCode
+              ? `Some voices could not be loaded. ${availableVoices.length} safe choices remain.`
+              : `${availableVoices.length} ${status.provider === "palabra" ? "Palabra" : "ElevenLabs"} voices loaded.`,
+          );
           setPipelineMessage(
             `${status.provider === "palabra" ? "Palabra" : "ElevenLabs"} ${status.modelId} is ready for natural speech streaming.`,
           );
+        } else {
+          setVoiceCatalogMessage(
+            "Natural voice choices are unavailable in diagnostic mode.",
+          );
         }
-      })
-      .catch(() => {
+      } catch {
         if (!mounted) return;
         setPipelineMessage(
           "Provider status could not be loaded. Diagnostic PCM remains active.",
         );
-      });
+      } finally {
+        if (mounted) setVoiceCatalogLoading(false);
+      }
+    }
+
+    void initializeProvider();
 
     return () => {
       mounted = false;
@@ -332,6 +396,17 @@ export function App() {
     localStorage.setItem(OUTPUT_STORAGE_KEY, deviceId);
   };
 
+  const selectVoice = (nextVoiceId: string) => {
+    setVoiceId(nextVoiceId);
+    localStorage.setItem(VOICE_STORAGE_KEY, nextVoiceId);
+    const nextVoice = voices.find((voice) => voice.id === nextVoiceId);
+    setPipelineStage("idle");
+    setPipelineMetrics(null);
+    setPipelineMessage(
+      `${nextVoice?.name ?? "Voice"} selected for the next sentence.`,
+    );
+  };
+
   const input = inputs.find((device) => device.deviceId === selectedInput);
   const output = outputs.find((device) => device.deviceId === selectedOutput);
   const warning = routingWarning(input, output);
@@ -403,26 +478,45 @@ export function App() {
     setBufferedBytes(snapshot.bufferedBytes);
 
     if (snapshot.stage === "synthesizing") {
-      setPipelineMessage("Synthesizer request started.");
+      setPipelineMessage(
+        activeRunMode.current === "preview"
+          ? "Generating the selected voice preview."
+          : "Synthesizer request started.",
+      );
     } else if (snapshot.stage === "buffering") {
-      setPipelineMessage("Ordering chunks and filling the startup buffer.");
+      setPipelineMessage(
+        activeRunMode.current === "preview"
+          ? "Ordering and buffering preview audio."
+          : "Ordering chunks and filling the startup buffer.",
+      );
     } else if (snapshot.stage === "playing") {
       setPipelineMessage(
-        "Audio is streaming once into the selected virtual output.",
+        activeRunMode.current === "preview"
+          ? "Preview is playing once on the Mac default output."
+          : "Audio is streaming once into the selected virtual output.",
       );
     } else if (snapshot.stage === "failed") {
       setPipelineMessage(friendlyPipelineError(snapshot.errorCode));
     }
   };
 
-  const startDiagnostic = async () => {
+  const startUtterance = async (mode: "route" | "preview") => {
     if (pipelineBusy) return;
-    if (!diagnosticText.trim()) {
+    const preview = mode === "preview";
+    const text = preview ? VOICE_PREVIEW_TEXT : diagnosticText;
+    const outputDeviceId = preview ? SYSTEM_DEFAULT_OUTPUT_ID : selectedOutput;
+
+    if (!text.trim()) {
       setPipelineStage("failed");
       setPipelineMessage("Enter a sentence before starting synthesis.");
       return;
     }
-    if (!textOutputReady || !selectedOutput) {
+    if (preview && !usingNaturalVoice) {
+      setPipelineStage("failed");
+      setPipelineMessage("Configure a natural TTS provider before previewing.");
+      return;
+    }
+    if (!preview && (!textOutputReady || !selectedOutput)) {
       setPipelineStage("failed");
       setPipelineMessage("Select a virtual output before starting.");
       return;
@@ -438,25 +532,28 @@ export function App() {
     const sink = new StreamingWebAudioSink();
     utteranceController.current = controller;
     utteranceSink.current = sink;
-    utteranceOutput.current = selectedOutput;
+    utteranceOutput.current = preview ? null : selectedOutput;
+    activeRunMode.current = mode;
     setPipelineMetrics(null);
     setBufferedBytes(0);
     setPipelineStage("synthesizing");
     setPipelineMessage(
-      usingNaturalVoice
-        ? `Starting ${providerDisplayName} streaming synthesis.`
-        : "Starting deterministic streaming synthesis.",
+      preview
+        ? `Preparing ${selectedVoice?.name ?? providerDisplayName} on the Mac default output.`
+        : usingNaturalVoice
+          ? `Starting ${providerDisplayName} streaming synthesis.`
+          : "Starting deterministic streaming synthesis.",
     );
 
     const result = await runUtterance({
       adapter: ttsAdapter,
       request: {
         utteranceId: createUtteranceId(),
-        text: diagnosticText,
+        text,
         voiceId,
       },
       sink,
-      outputDeviceId: selectedOutput,
+      outputDeviceId,
       signal: controller.signal,
       onSnapshot: updatePipeline,
     });
@@ -471,9 +568,11 @@ export function App() {
 
     if (result.stage === "completed") {
       setPipelineMessage(
-        usingNaturalVoice
-          ? "Natural speech stream completed once. Confirm it arrived in the call app."
-          : "Diagnostic stream completed once. Confirm it arrived in the call app.",
+        preview
+          ? `${selectedVoice?.name ?? "Voice"} preview completed on the Mac default output.`
+          : usingNaturalVoice
+            ? "Natural speech stream completed once. Confirm it arrived in the call app."
+            : "Diagnostic stream completed once. Confirm it arrived in the call app.",
       );
     } else if (result.stage === "cancelled") {
       setPipelineMessage("Request, buffer, and output were cancelled safely.");
@@ -482,9 +581,16 @@ export function App() {
     }
   };
 
+  const startDiagnostic = () => startUtterance("route");
+  const startVoicePreview = () => startUtterance("preview");
+
   const cancelDiagnostic = () => {
     if (!utteranceController.current) return;
-    setPipelineMessage("Cancelling request, buffer, and output.");
+    setPipelineMessage(
+      activeRunMode.current === "preview"
+        ? "Cancelling voice preview."
+        : "Cancelling request, buffer, and output.",
+    );
     utteranceController.current.abort();
     void utteranceSink.current?.stop();
   };
@@ -699,17 +805,35 @@ export function App() {
               <span>Voice</span>
               <select
                 value={voiceId}
-                disabled={pipelineBusy}
-                onChange={(event) => setVoiceId(event.target.value)}
+                disabled={pipelineBusy || voiceCatalogLoading}
+                onChange={(event) => selectVoice(event.target.value)}
               >
                 {voices.map((voice) => (
                   <option key={voice.id} value={voice.id}>
-                    {voice.name}
+                    {voiceOptionLabel(voice)}
                   </option>
                 ))}
               </select>
+              <small className="voice-help">
+                {voiceCatalogLoading
+                  ? "Loading Palabra built-in and custom voices…"
+                  : voiceCatalogMessage}
+              </small>
             </label>
             <div className="button-group">
+              <button
+                className="secondary-button voice-preview-button"
+                disabled={
+                  pipelineBusy ||
+                  testState === "playing" ||
+                  voiceCatalogLoading ||
+                  !usingNaturalVoice ||
+                  !voiceId
+                }
+                onClick={() => void startVoicePreview()}
+              >
+                Preview voice
+              </button>
               <button
                 className="primary-button"
                 disabled={
@@ -740,7 +864,7 @@ export function App() {
                 {providerDisplayName} runs in the Electron main process. The API
                 key is never sent to the renderer.
                 {providerStatus?.provider === "palabra" &&
-                  " Palabra has priority over ElevenLabs."}
+                  " Palabra has priority over ElevenLabs. Voice changes are applied per sentence on the reused WebSocket session."}
               </>
             ) : (
               <>

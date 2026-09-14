@@ -7,6 +7,8 @@ type SinkSelectableAudio = HTMLAudioElement & {
   setSinkId?: (deviceId: string) => Promise<void>;
 };
 
+export const SYSTEM_DEFAULT_OUTPUT_ID = "system-default";
+
 export class StreamingWebAudioSink implements StreamingAudioSink {
   private context: AudioContext | null = null;
   private destination: MediaStreamAudioDestinationNode | null = null;
@@ -39,7 +41,9 @@ export class StreamingWebAudioSink implements StreamingAudioSink {
     this.audio = audio;
 
     try {
-      await audio.setSinkId(outputDeviceId);
+      await audio.setSinkId(
+        outputDeviceId === SYSTEM_DEFAULT_OUTPUT_ID ? "" : outputDeviceId,
+      );
       await context.resume();
       await audio.play();
       this.nextStartTime = context.currentTime + 0.1;

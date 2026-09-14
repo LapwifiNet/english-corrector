@@ -1,3 +1,5 @@
+import type { TtsVoiceCategory } from "../../shared/tts";
+
 export type UtteranceId = string;
 
 export type AudioFormat = {
@@ -32,6 +34,8 @@ export type TtsVoice = {
   id: string;
   name: string;
   locale: string;
+  category?: TtsVoiceCategory;
+  description?: string;
   diagnostic?: boolean;
 };
 

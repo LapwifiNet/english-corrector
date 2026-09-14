@@ -2,6 +2,7 @@ import type {
   TtsBridge,
   TtsBridgeEvent,
   TtsProviderStatus,
+  TtsVoiceSummary,
 } from "../../shared/tts";
 import type {
   TtsAdapter,
@@ -73,17 +74,22 @@ export class RemoteTtsAdapter implements TtsAdapter {
   constructor(
     private readonly bridge: TtsBridge,
     private readonly status: TtsProviderStatus,
+    voiceCatalog: readonly TtsVoiceSummary[] = [],
   ) {
     this.provider = status.provider;
-    this.voices = status.voiceId
-      ? [
-          {
-            id: status.voiceId,
-            name: `${providerName(status.provider)} · ${status.modelId}`,
-            locale: status.language ?? "en-US",
-          },
-        ]
-      : [];
+    this.voices =
+      voiceCatalog.length > 0
+        ? voiceCatalog.map((voice) => ({ ...voice }))
+        : status.voiceId
+          ? [
+              {
+                id: status.voiceId,
+                name: `${providerName(status.provider)} · ${status.modelId}`,
+                locale: status.language ?? "en-US",
+                category: "configured",
+              },
+            ]
+          : [];
   }
 
   listVoices(): readonly TtsVoice[] {
