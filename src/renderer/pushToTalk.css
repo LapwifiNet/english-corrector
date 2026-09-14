@@ -328,13 +328,86 @@
   margin-top: 12px;
 }
 
-.stt-correction-meta span {
+.stt-correction-meta span,
+.stt-relay-meta span {
   overflow: hidden;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.stt-relay {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(39, 131, 222, 0.24);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.stt-relay-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.stt-relay-heading > div > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.stt-relay-heading p {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.stt-relay-stage {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--canvas);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.stt-relay-stage-preparing,
+.stt-relay-stage-synthesizing,
+.stt-relay-stage-buffering,
+.stt-relay-stage-playing {
+  border-color: rgba(39, 131, 222, 0.4);
+  color: var(--accent);
+}
+
+.stt-relay-stage-completed {
+  border-color: rgba(70, 161, 113, 0.4);
+  color: var(--positive);
+}
+
+.stt-relay-stage-cancelled,
+.stt-relay-stage-failed {
+  border-color: rgba(229, 72, 77, 0.4);
+  color: var(--danger);
+}
+
+.stt-relay-message {
+  min-height: 18px;
+  margin: 12px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.stt-relay-meta {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
 }
 
 @media (max-width: 760px) {
@@ -354,16 +427,19 @@
   }
 
   .stt-meta,
-  .stt-correction-meta {
+  .stt-correction-meta,
+  .stt-relay-meta {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .stt-correction-heading {
+  .stt-correction-heading,
+  .stt-relay-heading {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .stt-correction-stage {
+  .stt-correction-stage,
+  .stt-relay-stage {
     align-self: flex-start;
   }
 }
@@ -383,7 +459,8 @@
   }
 
   .stt-meta,
-  .stt-correction-meta {
+  .stt-correction-meta,
+  .stt-relay-meta {
     grid-template-columns: 1fr;
   }
 }
