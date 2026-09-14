@@ -76,6 +76,10 @@ await Promise.all([
     resolve(root, "dist/renderer/permissionOnboarding.css"),
   ),
   copyFile(
+    resolve(root, "src/renderer/blackHoleSetup.css"),
+    resolve(root, "dist/renderer/blackHoleSetup.css"),
+  ),
+  copyFile(
     resolve(root, "src/renderer/palabraSettings.css"),
     resolve(root, "dist/renderer/palabraSettings.css"),
   ),

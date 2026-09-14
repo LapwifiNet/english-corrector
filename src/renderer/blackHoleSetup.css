@@ -1,0 +1,99 @@
+.blackhole-readiness {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: min(1100px, calc(100% - 80px));
+  align-items: center;
+  gap: 14px;
+  margin: 24px auto -22px;
+  padding: 14px 16px;
+  border: 1px solid rgba(70, 161, 113, 0.34);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--positive) 12%);
+  box-shadow: var(--shadow);
+}
+
+.blackhole-readiness.renamed {
+  border-color: rgba(213, 128, 59, 0.36);
+  background: color-mix(in srgb, var(--surface) 88%, var(--warning) 12%);
+}
+
+.blackhole-readiness-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--positive);
+  color: white;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.blackhole-readiness.renamed .blackhole-readiness-icon {
+  background: var(--warning);
+}
+
+.blackhole-readiness small,
+.blackhole-readiness strong {
+  display: block;
+}
+
+.blackhole-readiness small {
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.blackhole-readiness p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.blackhole-readiness button {
+  white-space: nowrap;
+}
+
+.blackhole-storage-message {
+  width: min(1100px, calc(100% - 80px));
+  margin: 30px auto -30px;
+  color: var(--warning);
+  font-size: 12px;
+  text-align: center;
+}
+
+.blackhole-checklist {
+  display: grid;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding-left: 22px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.blackhole-checklist li::marker {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+@media (max-width: 700px) {
+  .blackhole-readiness {
+    grid-template-columns: auto minmax(0, 1fr);
+    width: calc(100% - 32px);
+    margin-bottom: -10px;
+  }
+
+  .blackhole-readiness button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .blackhole-storage-message {
+    width: calc(100% - 32px);
+    margin-bottom: -18px;
+  }
+}
