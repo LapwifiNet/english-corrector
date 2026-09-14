@@ -15,6 +15,7 @@ import {
   type CorrectionSnapshot,
 } from "../correction/correctionPipeline";
 import { createCorrectionEngine } from "../correction/correctionEngine";
+import { createSpeculativeCorrector } from "../correction/speculativeCorrector";
 import { createFakeCorrector } from "../correction/fakeCorrector";
 import { createIpcCorrectionAdapter } from "../correction/ipcCorrectionAdapter";
 import {
@@ -32,6 +33,7 @@ import {
   createRelayRouteResolver,
   DiagnosticRelaySink,
 } from "../relay/relayRoute";
+import { runUtterance } from "../tts/runUtterance";
 import type { PhraseEvent, StreamingTranscriber } from "./contracts";
 import { createDesktopTranscriber } from "./desktopTranscriber";
 import { FakeStreamingTranscriber } from "./fakeTranscriber";
@@ -48,6 +50,12 @@ import {
 } from "./transcriptReducer";
 
 const INPUT_STORAGE_KEY = "english-corrector.input-device";
+
+/**
+ * About 85 ms of 24 kHz PCM. Enough to absorb stream jitter, short enough
+ * that playback starts almost as soon as the first chunk lands.
+ */
+const PREBUFFER_BYTES = 4_096;
 
 /**
  * The desktop build streams audio to the configured provider. A browser
@@ -251,6 +259,9 @@ export function PushToTalkPanel() {
     const engine = createCorrectionEngine({ adapter });
     correctionPipelineRef.current = createCorrectionPipeline({
       engine,
+      // The guess starts while the speaker is still talking, so the answer
+      // is usually already on its way when the sentence closes.
+      speculator: createSpeculativeCorrector({ engine }),
       onSnapshot: (snapshot) => {
         if (mountedRef.current) setCorrection(snapshot);
       },
@@ -270,6 +281,8 @@ export function PushToTalkPanel() {
       }),
       createSink: () =>
         ttsBridge ? new StreamingWebAudioSink() : new DiagnosticRelaySink(),
+      run: (options) =>
+        runUtterance({ ...options, prebufferBytes: PREBUFFER_BYTES }),
       onSnapshot: (snapshot) => {
         if (mountedRef.current) setRelay(snapshot);
       },
@@ -318,6 +331,9 @@ export function PushToTalkPanel() {
       onEvent: (event) => {
         if (!mountedRef.current) return;
         setTranscript((current) => reduceTranscript(current, event));
+        if (event.type === "partial_transcript") {
+          correctionPipelineRef.current?.prewarm(event.phraseId, event.text);
+        }
         // The pipeline ends the hold itself when the provider fails.
         if (event.type === "failed") setHolding(false);
       },
