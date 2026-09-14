@@ -4,6 +4,7 @@ import {
   type PhraseId,
 } from "./contracts";
 import type { CorrectionEngine } from "./correctionEngine";
+import type { SpeculativeCorrector } from "./speculativeCorrector";
 
 export type CorrectionPhase =
   "idle" | "correcting" | "done" | "skipped" | "cancelled";
@@ -29,6 +30,8 @@ export type CorrectionPipelineDeps = {
   engine: CorrectionEngine;
   /** FR3.9: diagnostic mode speaks the original sentence. */
   enabled?: boolean;
+  /** Optional head start built from partial transcripts. */
+  speculator?: SpeculativeCorrector;
   onSnapshot?: (snapshot: CorrectionSnapshot) => void;
 };
 
@@ -68,7 +71,20 @@ export class CorrectionPipeline {
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
-    if (!enabled) this.cancel();
+    if (enabled) return;
+    this.deps.speculator?.discard();
+    this.cancel();
+  }
+
+  /**
+   * Hands the newest partial transcript to the speculator so the model call
+   * can start while the speaker is still talking. The guess is only ever
+   * used by a sentence the provider finished.
+   */
+  prewarm(phraseId: PhraseId, partialText: string): void {
+    if (!this.enabled) return;
+    if (this.submittedPhraseIds.has(phraseId)) return;
+    this.deps.speculator?.observe(phraseId, partialText);
   }
 
   async submit(
@@ -79,6 +95,7 @@ export class CorrectionPipeline {
     if (this.submittedPhraseIds.has(phraseId)) return this.current;
     this.remember(phraseId);
     if (originalText.length === 0) {
+      this.deps.speculator?.discard(phraseId);
       return this.publish({
         phase: "skipped",
         phraseId,
@@ -111,10 +128,15 @@ export class CorrectionPipeline {
     });
 
     try {
-      const result = await this.deps.engine.correct(
-        { phraseId, originalText, locale: "en" },
-        { signal: controller.signal },
-      );
+      // A guess started from the last partial usually says the same thing,
+      // and then the answer is already on its way.
+      const pending =
+        this.deps.speculator?.take(phraseId, originalText) ??
+        this.deps.engine.correct(
+          { phraseId, originalText, locale: "en" },
+          { signal: controller.signal },
+        );
+      const result = await pending;
       if (this.activeController !== controller) return this.current;
       this.clearActive();
 
@@ -155,13 +177,17 @@ export class CorrectionPipeline {
   /** Drops the phrase so a late correction never reaches the speaker. */
   cancel(phraseId?: PhraseId): void {
     const active = this.activePhraseId;
-    if (!active) return;
+    if (!active) {
+      this.deps.speculator?.discard(phraseId);
+      return;
+    }
     if (phraseId !== undefined && phraseId !== active) return;
 
     const controller = this.activeController;
     const originalText = this.current.originalText;
     this.clearActive();
     controller?.abort();
+    this.deps.speculator?.discard(active);
 
     this.publish({
       phase: "cancelled",

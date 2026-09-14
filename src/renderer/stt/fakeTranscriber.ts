@@ -25,6 +25,14 @@ export const DEFAULT_FAKE_TRANSCRIPT: FakeTranscriptScript = {
   confidence: 0.96,
 };
 
+/**
+ * Silence that closes a sentence inside a continuous session. The real
+ * provider does this with its own turn detection; the fake only has to land
+ * a final while the key is still held, so a diagnostic build without an API
+ * key still speaks before release.
+ */
+export const FAKE_CONTINUOUS_SILENCE_MS = 400;
+
 function abortError(): Error {
   const error = new Error("The transcription was cancelled.");
   error.name = "AbortError";
@@ -66,11 +74,14 @@ export class FakeStreamingTranscriber implements StreamingTranscriber {
 
   start(request: StartTranscriptionRequest): TranscriptionSession {
     const { phraseId, signal, onEvent } = request;
+    const continuous = request.mode === "continuous";
     let closed = false;
     let finishing: Promise<void> | null = null;
     let lastSequence = -1;
     let voicedFrames = 0;
     let nextPartial = 0;
+    let utterance = 0;
+    let lastVoiceAt: number | null = null;
 
     const emit = (event: PhraseEvent) => {
       if (!closed && !signal.aborted) onEvent(event);
@@ -88,12 +99,51 @@ export class FakeStreamingTranscriber implements StreamingTranscriber {
       });
     };
 
+    const flushPartials = () => {
+      while (nextPartial < this.script.partials.length) {
+        voicedFrames = Math.max(voicedFrames, nextPartial + 1);
+        emitAvailablePartial();
+      }
+    };
+
+    const emitFinal = (receivedAt: number) => {
+      const spoke = voicedFrames > 0;
+      emit({
+        type: "final_transcript",
+        phraseId,
+        text: spoke ? this.script.final : "",
+        confidence: spoke ? this.script.confidence : undefined,
+        receivedAt,
+        utterance: continuous ? utterance : undefined,
+      });
+    };
+
+    /**
+     * One sentence per breath. The words repeat because the script holds a
+     * single sentence; what matters is that the final arrives mid hold.
+     */
+    const closeSentenceOnSilence = (at: number) => {
+      if (voicedFrames === 0 || lastVoiceAt === null) return;
+      if (at - lastVoiceAt < FAKE_CONTINUOUS_SILENCE_MS) return;
+
+      flushPartials();
+      emitFinal(at);
+      utterance += 1;
+      voicedFrames = 0;
+      nextPartial = 0;
+      lastVoiceAt = null;
+    };
+
     return {
       write: (frame) => {
         if (closed || signal.aborted || frame.phraseId !== phraseId) return;
         if (frame.sequence <= lastSequence) return;
         lastSequence = frame.sequence;
-        if (frameRms(frame) < 0.01) return;
+        if (frameRms(frame) < 0.01) {
+          if (continuous) closeSentenceOnSilence(frame.capturedAt);
+          return;
+        }
+        lastVoiceAt = frame.capturedAt;
         voicedFrames += 1;
         emitAvailablePartial();
       },
@@ -102,12 +152,14 @@ export class FakeStreamingTranscriber implements StreamingTranscriber {
         finishing = (async () => {
           if (closed || signal.aborted) return;
 
-          if (voicedFrames > 0) {
-            while (nextPartial < this.script.partials.length) {
-              voicedFrames = Math.max(voicedFrames, nextPartial + 1);
-              emitAvailablePartial();
-            }
+          // A continuous session that already reported every sentence has
+          // nothing left to flush, so it must not add an empty turn.
+          if (continuous && voicedFrames === 0 && utterance > 0) {
+            closed = true;
+            return;
           }
+
+          if (voicedFrames > 0) flushPartials();
 
           try {
             await this.delay(80, signal);
@@ -117,13 +169,7 @@ export class FakeStreamingTranscriber implements StreamingTranscriber {
           }
           if (closed || signal.aborted) return;
 
-          emit({
-            type: "final_transcript",
-            phraseId,
-            text: voicedFrames > 0 ? this.script.final : "",
-            confidence: voicedFrames > 0 ? this.script.confidence : undefined,
-            receivedAt: this.clock(),
-          });
+          emitFinal(this.clock());
           closed = true;
         })();
         return finishing;
