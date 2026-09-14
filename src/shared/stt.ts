@@ -18,7 +18,16 @@ export type SttProviderName = "assemblyai";
 export type SttEnvVariableName =
   | "ASSEMBLYAI_API_KEY"
   | "ASSEMBLYAI_STREAMING_HOST"
-  | "ASSEMBLYAI_FORMAT_TURNS";
+  | "ASSEMBLYAI_FORMAT_TURNS"
+  | "ASSEMBLYAI_MIN_TURN_SILENCE_MS"
+  | "ASSEMBLYAI_MAX_TURN_SILENCE_MS";
+
+/**
+ * A phrase session ends on the first final transcript, which is what
+ * push-to-talk needs. A continuous session stays open for hands-free mode and
+ * reports one final per spoken sentence.
+ */
+export type SttSessionMode = "phrase" | "continuous";
 
 export type SttProviderStatus = {
   configured: boolean;
@@ -40,6 +49,8 @@ export type SttBridgeEvent =
       phraseId: string;
       revision: number;
       text: string;
+      /** Index of the sentence inside a continuous session. */
+      utterance?: number;
     }
   | {
       type: "final";
@@ -47,6 +58,8 @@ export type SttBridgeEvent =
       text: string;
       receivedAt: number;
       confidence?: number;
+      /** Index of the sentence inside a continuous session. */
+      utterance?: number;
     }
   | {
       type: "failed";
@@ -57,6 +70,7 @@ export type SttBridgeEvent =
 export type SttStartRequest = {
   phraseId: string;
   sampleRate: number;
+  mode?: SttSessionMode;
 };
 
 export type SttAudioChunk = {

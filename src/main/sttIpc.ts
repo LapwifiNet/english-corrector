@@ -5,6 +5,7 @@ import {
   STT_IPC,
   type SttAudioChunk,
   type SttBridgeEvent,
+  type SttSessionMode,
   type SttStartRequest,
 } from "../shared/stt";
 import {
@@ -18,6 +19,7 @@ type ActiveSession = {
   phraseId: string;
   session: SttSession;
   revision: number;
+  utterance: number;
 };
 
 let active: ActiveSession | null = null;
@@ -65,6 +67,8 @@ export function registerSttIpc(): void {
 
     dropActive();
 
+    const mode: SttSessionMode =
+      request?.mode === "continuous" ? "continuous" : "phrase";
     const sender = event.sender;
     const config = readSttRuntimeConfig();
     if (!config) {
@@ -84,6 +88,7 @@ export function registerSttIpc(): void {
 
     const session = startAssemblyAiSession({
       config,
+      mode,
       events: {
         onPartial: (text) => {
           if (stopped || !active) return;
@@ -92,15 +97,26 @@ export function registerSttIpc(): void {
             type: "partial",
             phraseId,
             revision: active.revision,
+            utterance: active.utterance,
             text,
           });
         },
         onFinal: (text, confidence) => {
           if (stopped) return;
-          release();
+          const utterance = active?.utterance ?? 0;
+          // Hands-free mode keeps listening, so the session outlives a final
+          // and the next sentence arrives under the next utterance index.
+          if (mode === "continuous" && active) {
+            active.utterance += 1;
+            active.revision = 0;
+          } else {
+            release();
+          }
+
           send(sender, {
             type: "final",
             phraseId,
+            utterance,
             text,
             confidence,
             receivedAt: Date.now(),
@@ -114,7 +130,7 @@ export function registerSttIpc(): void {
       },
     });
 
-    active = { phraseId, session, revision: 0 };
+    active = { phraseId, session, revision: 0, utterance: 0 };
   });
 
   ipcMain.on(STT_IPC.audio, (_event, payload: unknown) => {

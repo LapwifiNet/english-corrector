@@ -3,6 +3,7 @@ import {
   type SttBridgeErrorCode,
   type SttEnvVariableName,
   type SttProviderStatus,
+  type SttSessionMode,
 } from "../shared/stt";
 
 export const DEFAULT_STREAMING_HOST = "streaming.assemblyai.com";
@@ -14,12 +15,20 @@ export const MIN_CHUNK_MS = 50;
 export const MAX_CHUNK_MS = 1_000;
 export const CHUNK_MS = 50;
 
+/** The provider clamps turn detection silence to 50 ms to 10000 ms. */
+export const MIN_TURN_SILENCE_MS = 50;
+export const MAX_TURN_SILENCE_MS = 10_000;
+
 export type AssemblyAiConfig = {
   apiKey: string;
   host: string;
   sampleRate: number;
   formatTurns: boolean;
   finalizeTimeoutMs: number;
+  /** Silence before the end-of-turn check. Provider default is 400 ms. */
+  minTurnSilenceMs?: number;
+  /** Silence that forces a turn to end. Provider default is 1280 ms. */
+  maxTurnSilenceMs?: number;
 };
 
 export class SttProviderError extends Error {
@@ -39,6 +48,18 @@ export function sttProviderErrorCode(error: unknown): SttBridgeErrorCode {
 
 function trimmed(value: string | undefined): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Hands-free mode lives or dies by turn detection, so both silence windows are
+ * tunable without a rebuild. Out-of-range values are clamped instead of
+ * rejected, because the provider closes the session over an invalid value.
+ */
+function turnSilenceMs(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt(trimmed(value), 10);
+  if (!Number.isFinite(parsed)) return undefined;
+
+  return Math.min(MAX_TURN_SILENCE_MS, Math.max(MIN_TURN_SILENCE_MS, parsed));
 }
 
 export function readSttProviderStatus(
@@ -66,6 +87,8 @@ export function readSttRuntimeConfig(
     sampleRate: STT_SAMPLE_RATE,
     formatTurns: trimmed(env.ASSEMBLYAI_FORMAT_TURNS) !== "false",
     finalizeTimeoutMs: DEFAULT_FINALIZE_TIMEOUT_MS,
+    minTurnSilenceMs: turnSilenceMs(env.ASSEMBLYAI_MIN_TURN_SILENCE_MS),
+    maxTurnSilenceMs: turnSilenceMs(env.ASSEMBLYAI_MAX_TURN_SILENCE_MS),
   };
 }
 
@@ -186,6 +209,14 @@ export function streamingUrl(config: AssemblyAiConfig, token: string): string {
     token,
   });
 
+  if (config.minTurnSilenceMs !== undefined) {
+    params.set("min_turn_silence", String(config.minTurnSilenceMs));
+  }
+
+  if (config.maxTurnSilenceMs !== undefined) {
+    params.set("max_turn_silence", String(config.maxTurnSilenceMs));
+  }
+
   return `wss://${config.host}/v3/ws?${params.toString()}`;
 }
 
@@ -287,14 +318,20 @@ type FinalTurn = {
  * One push-to-talk phrase is one streaming session. A phrase can contain
  * several provider turns when the speaker pauses, so finished turns are kept
  * in turn order and joined into a single transcript.
+ *
+ * Hands-free mode passes mode "continuous" instead. The socket then stays open
+ * and every turn the provider closes is reported on its own, so each sentence
+ * reaches the corrector without paying for a new session and a new handshake.
  */
 export function startAssemblyAiSession(args: {
   config: AssemblyAiConfig;
   events: SttSessionEvents;
+  mode?: SttSessionMode;
   fetchImpl?: FetchLike;
   socketFactory?: SttSocketFactory;
 }): SttSession {
   const { config, events } = args;
+  const continuous = args.mode === "continuous";
   const finals = new Map<number, FinalTurn>();
   const queue: ArrayBuffer[] = [];
   const chunker = createPcmChunker({ sampleRate: config.sampleRate });
@@ -357,7 +394,21 @@ export function startAssemblyAiSession(args: {
     const text = joinedText();
     const confidence = meanConfidence();
     closeSocket();
+    // A continuous session already reported every completed turn, so it ends
+    // quietly unless one last turn is still pending.
+    if (continuous && text.length === 0) return;
     events.onFinal(text, confidence);
+  }
+
+  function emitTurn(order: number): void {
+    if (settled || cancelled) return;
+
+    const entry = finals.get(order);
+    finals.delete(order);
+    const text = entry?.text ?? "";
+    if (text.length === 0) return;
+
+    events.onFinal(text, entry?.confidence);
   }
 
   function settleError(code: SttBridgeErrorCode): void {
@@ -375,9 +426,11 @@ export function startAssemblyAiSession(args: {
     const formatted = turn.turn_is_formatted === true;
 
     if (turn.end_of_turn !== true) {
-      const combined = [joinedText(), text]
-        .filter((part) => part.length > 0)
-        .join(" ");
+      // A continuous session hands over each sentence as it completes, so a
+      // partial carries only the turn being spoken right now.
+      const combined = continuous
+        ? text
+        : [joinedText(), text].filter((part) => part.length > 0).join(" ");
       if (combined.length > 0) events.onPartial(combined);
       return;
     }
@@ -394,7 +447,14 @@ export function startAssemblyAiSession(args: {
     // With format_turns the same turn arrives twice. Only the formatted copy
     // ends the phrase, otherwise every turn would be handled two times.
     const isComplete = !config.formatTurns || formatted;
-    if (finishing && isComplete) settleFinal();
+    if (!isComplete) return;
+
+    if (continuous) {
+      emitTurn(order);
+      return;
+    }
+
+    if (finishing) settleFinal();
   }
 
   function handleMessage(data: unknown): void {
