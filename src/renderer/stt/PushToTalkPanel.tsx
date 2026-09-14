@@ -10,6 +10,7 @@ import type { CorrectionProviderStatus } from "../../shared/correction";
 import {
   createCorrectionPipeline,
   INITIAL_CORRECTION_SNAPSHOT,
+  isSpeakable,
   type CorrectionPipeline,
   type CorrectionSnapshot,
 } from "../correction/correctionPipeline";
@@ -24,14 +25,14 @@ import {
   type RelayPlaybackSnapshot,
 } from "../relay/correctedSpeechRelay";
 import {
+  createHoldSpeechPipeline,
+  type HoldSpeechPipeline,
+} from "../relay/holdSpeechPipeline";
+import {
   createRelayRouteResolver,
   DiagnosticRelaySink,
 } from "../relay/relayRoute";
-import type {
-  PhraseEvent,
-  StreamingTranscriber,
-  TranscriptionSession,
-} from "./contracts";
+import type { PhraseEvent, StreamingTranscriber } from "./contracts";
 import { createDesktopTranscriber } from "./desktopTranscriber";
 import { FakeStreamingTranscriber } from "./fakeTranscriber";
 import {
@@ -39,7 +40,6 @@ import {
   MicrophoneCaptureError,
   type MicrophoneCaptureSession,
 } from "./microphoneCapture";
-import { PushToTalkController } from "./phraseController";
 import {
   INITIAL_TRANSCRIPT_STATE,
   reduceTranscript,
@@ -48,15 +48,6 @@ import {
 } from "./transcriptReducer";
 
 const INPUT_STORAGE_KEY = "english-corrector.input-device";
-
-type ActivePhrase = {
-  phraseId: string;
-  abortController: AbortController;
-  transcription: TranscriptionSession;
-  capture: MicrophoneCaptureSession | null;
-  pendingFinish: boolean;
-  finishing: boolean;
-};
 
 /**
  * The desktop build streams audio to the configured provider. A browser
@@ -178,6 +169,17 @@ function stageLabel(stage: TranscriptState["stage"]): string {
   }
 }
 
+/**
+ * A hold now carries several phrases, so a finished phrase no longer means
+ * the key came up. While the key is down, a settled phrase reads as progress.
+ */
+function holdStageLabel(state: TranscriptState, holding: boolean): string {
+  if (holding && (state.stage === "final" || state.stage === "empty")) {
+    return "Listening for the next sentence";
+  }
+  return stageLabel(state.stage);
+}
+
 function friendlyCaptureError(code?: string): string {
   switch (code) {
     case "microphone_permission_denied":
@@ -221,6 +223,9 @@ export function PushToTalkPanel() {
   );
   const [transcript, setTranscript] = useState(INITIAL_TRANSCRIPT_STATE);
   const [level, setLevel] = useState(0);
+  const [holding, setHolding] = useState(false);
+  const [spokenPhrases, setSpokenPhrases] = useState(0);
+  const [congested, setCongested] = useState(false);
   const [correctionEnabled, setCorrectionEnabled] = useState(true);
   const [correction, setCorrection] = useState<CorrectionSnapshot>(
     INITIAL_CORRECTION_SNAPSHOT,
@@ -233,6 +238,10 @@ export function PushToTalkPanel() {
   );
 
   const mountedRef = useRef(true);
+  const transcriberRef = useRef<StreamingTranscriber | null>(null);
+  const captureFactoryRef = useRef(new BrowserMicrophoneCapture());
+  const captureRef = useRef<MicrophoneCaptureSession | null>(null);
+  const pendingStopRef = useRef(false);
   const correctionPipelineRef = useRef<CorrectionPipeline | null>(null);
   if (!correctionPipelineRef.current) {
     const bridge = window.desktopApi?.correction;
@@ -266,22 +275,57 @@ export function PushToTalkPanel() {
       },
     });
   }
-  const controllerRef = useRef(new PushToTalkController());
-  const transcriberRef = useRef<StreamingTranscriber | null>(null);
-  const captureFactoryRef = useRef(new BrowserMicrophoneCapture());
-  const activeRef = useRef<ActivePhrase | null>(null);
 
-  const applyPhraseEvent = useCallback((event: PhraseEvent) => {
-    if (!mountedRef.current) return;
-    setTranscript((current) => reduceTranscript(current, event));
-    if (
-      event.type === "final_transcript" ||
-      event.type === "failed" ||
-      event.type === "cancelled"
-    ) {
-      controllerRef.current.complete(event.phraseId);
-    }
-  }, []);
+  /**
+   * One hold, one provider session, and as many phrases as the speaker
+   * finishes while holding. Correction and playback run per phrase through
+   * the ordered queue, so speech starts before the key comes up.
+   */
+  const holdPipelineRef = useRef<HoldSpeechPipeline | null>(null);
+  if (!holdPipelineRef.current) {
+    holdPipelineRef.current = createHoldSpeechPipeline<CorrectionSnapshot>({
+      // Still built on the first hold, so a browser diagnostic never
+      // reaches for the desktop bridge before it is needed.
+      transcriber: {
+        start: (request) => {
+          const transcriber = transcriberRef.current ?? createTranscriber();
+          transcriberRef.current = transcriber;
+          return transcriber.start(request);
+        },
+      },
+      prepare: async (phrase) => {
+        const snapshot = await correctionPipelineRef.current?.submit(
+          phrase.phraseId,
+          phrase.text,
+        );
+        if (!snapshot || snapshot.phraseId !== phrase.phraseId) return null;
+        return isSpeakable(snapshot) ? snapshot : null;
+      },
+      play: async (snapshot, _phrase, signal) => {
+        const relayPipeline = relayRef.current;
+        if (!relayPipeline || signal.aborted) return;
+
+        const stopVoice = () =>
+          relayPipeline.cancel(snapshot.phraseId ?? undefined);
+        signal.addEventListener("abort", stopVoice, { once: true });
+        if (mountedRef.current) setSpokenPhrases((count) => count + 1);
+        try {
+          await relayPipeline.submit(snapshot);
+        } finally {
+          signal.removeEventListener("abort", stopVoice);
+        }
+      },
+      onEvent: (event) => {
+        if (!mountedRef.current) return;
+        setTranscript((current) => reduceTranscript(current, event));
+        // The pipeline ends the hold itself when the provider fails.
+        if (event.type === "failed") setHolding(false);
+      },
+      onCongestion: (value) => {
+        if (mountedRef.current) setCongested(value);
+      },
+    });
+  }
 
   const loadDevices = useCallback(async (requestPermission: boolean) => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -341,164 +385,111 @@ export function PushToTalkPanel() {
     }
   }, []);
 
-  const finishResources = useCallback(
-    async (active: ActivePhrase) => {
-      if (active.finishing) return;
-      active.finishing = true;
-      try {
-        await active.capture?.stop();
-        setLevel(0);
-        await active.transcription.finish();
-      } catch (error) {
-        if (
-          !active.abortController.signal.aborted &&
-          activeRef.current === active
-        ) {
-          applyPhraseEvent({
-            type: "failed",
-            phraseId: active.phraseId,
-            code:
-              error instanceof MicrophoneCaptureError
-                ? error.code
-                : "transcription_finalize_failed",
-          });
-        }
-      } finally {
-        if (activeRef.current === active) activeRef.current = null;
-      }
-    },
-    [applyPhraseEvent],
-  );
-
-  const startPhrase = useCallback(async () => {
-    if (
-      correction.phase === "correcting" ||
-      isRelayPlaybackBusy(relayRef.current?.snapshot() ?? relay)
-    ) {
-      return;
-    }
+  const beginHold = useCallback(async () => {
+    const pipeline = holdPipelineRef.current;
+    if (!pipeline || pipeline.snapshot().holding) return;
     if (!selectedDeviceId) {
       setDeviceMessage("Select a physical microphone first.");
       return;
     }
 
-    const started = controllerRef.current.press();
-    if (!started) return;
+    // A new hold supersedes whatever the previous one was still speaking.
+    pipeline.cancel();
     correctionPipelineRef.current?.cancel();
     relayRef.current?.cancel();
     setCorrection(INITIAL_CORRECTION_SNAPSHOT);
     setRelay(INITIAL_RELAY_PLAYBACK_SNAPSHOT);
-    applyPhraseEvent(started);
+    setSpokenPhrases(0);
+    setCongested(false);
 
-    const transcriber = transcriberRef.current ?? createTranscriber();
-    transcriberRef.current = transcriber;
+    const sessionId = pipeline.press();
+    if (!sessionId) return;
+    pendingStopRef.current = false;
+    setHolding(true);
 
-    const abortController = new AbortController();
-    const active: ActivePhrase = {
-      phraseId: started.phraseId,
-      abortController,
-      transcription: transcriber.start({
-        phraseId: started.phraseId,
-        signal: abortController.signal,
-        onEvent: applyPhraseEvent,
-      }),
-      capture: null,
-      pendingFinish: false,
-      finishing: false,
+    const isCurrent = () => pipeline.snapshot().sessionId === sessionId;
+    const failHold = (failure: PhraseEvent) => {
+      setTranscript((current) => reduceTranscript(current, failure));
+      pipeline.cancel();
+      setHolding(false);
+      setLevel(0);
     };
-    activeRef.current = active;
 
     try {
       const capture = await captureFactoryRef.current.start({
-        phraseId: active.phraseId,
+        phraseId: sessionId,
         deviceId: selectedDeviceId,
-        onFrame: (frame) => active.transcription.write(frame),
+        onFrame: (frame) => pipeline.write(frame),
         onLevel: (nextLevel) => {
-          if (mountedRef.current && activeRef.current === active) {
-            setLevel(nextLevel);
-          }
+          if (mountedRef.current && isCurrent()) setLevel(nextLevel);
         },
         onError: (error) => {
-          if (activeRef.current !== active) return;
-          applyPhraseEvent({
+          if (!isCurrent()) return;
+          const active = captureRef.current;
+          captureRef.current = null;
+          void active?.stop();
+          failHold({
             type: "failed",
-            phraseId: active.phraseId,
+            phraseId: pipeline.snapshot().openPhraseId ?? sessionId,
             code: error.code,
           });
-          abortController.abort();
-          active.transcription.cancel();
-          activeRef.current = null;
-          void active.capture?.stop();
-          setLevel(0);
         },
       });
 
-      if (activeRef.current !== active || abortController.signal.aborted) {
+      if (!isCurrent()) {
         await capture.stop();
         return;
       }
 
-      active.capture = capture;
-      if (active.pendingFinish) await finishResources(active);
+      captureRef.current = capture;
+      // The key came back up while the microphone was still opening.
+      if (pendingStopRef.current) {
+        pendingStopRef.current = false;
+        captureRef.current = null;
+        await capture.stop();
+        setLevel(0);
+      }
     } catch (error) {
-      if (activeRef.current !== active || abortController.signal.aborted)
-        return;
-      applyPhraseEvent({
+      if (!isCurrent()) return;
+      failHold({
         type: "failed",
-        phraseId: active.phraseId,
+        phraseId: pipeline.snapshot().openPhraseId ?? sessionId,
         code:
           error instanceof MicrophoneCaptureError
             ? error.code
             : "microphone_capture_failed",
       });
-      active.transcription.cancel();
-      abortController.abort();
-      activeRef.current = null;
-      setLevel(0);
     }
-  }, [
-    applyPhraseEvent,
-    correction.phase,
-    finishResources,
-    relay,
-    selectedDeviceId,
-  ]);
+  }, [selectedDeviceId]);
 
-  const finishPhrase = useCallback(async () => {
-    const ended = controllerRef.current.release();
-    if (!ended) return;
-    applyPhraseEvent(ended);
+  const endHold = useCallback(async () => {
+    const pipeline = holdPipelineRef.current;
+    if (!pipeline || !pipeline.snapshot().holding) return;
 
-    const active = activeRef.current;
-    if (!active || active.phraseId !== ended.phraseId) return;
-    if (!active.capture) {
-      active.pendingFinish = true;
-      return;
-    }
-    await finishResources(active);
-  }, [applyPhraseEvent, finishResources]);
-
-  const cancelPhrase = useCallback(() => {
-    const cancelled = controllerRef.current.cancel();
-    const correctionWasActive =
-      correctionPipelineRef.current?.snapshot().phase === "correcting";
-    const relayWasActive = isRelayPlaybackBusy(
-      relayRef.current?.snapshot() ?? relay,
-    );
-    correctionPipelineRef.current?.cancel();
-    relayRef.current?.cancel();
-    if (!cancelled && !correctionWasActive && !relayWasActive) return;
-    if (cancelled) applyPhraseEvent(cancelled);
-
-    const active = activeRef.current;
-    activeRef.current = null;
-    if (active) {
-      active.abortController.abort();
-      active.transcription.cancel();
-      void active.capture?.stop();
+    const capture = captureRef.current;
+    captureRef.current = null;
+    if (capture) {
+      await capture.stop();
+    } else {
+      pendingStopRef.current = true;
     }
     setLevel(0);
-  }, [applyPhraseEvent]);
+    setHolding(false);
+    // Flushes the provider, then waits for the last phrase to be spoken.
+    await pipeline.release();
+  }, []);
+
+  const cancelHold = useCallback(() => {
+    const capture = captureRef.current;
+    captureRef.current = null;
+    pendingStopRef.current = true;
+    void capture?.stop();
+    holdPipelineRef.current?.cancel();
+    correctionPipelineRef.current?.cancel();
+    relayRef.current?.cancel();
+    setHolding(false);
+    setLevel(0);
+  }, []);
 
   useEffect(() => {
     const bridge = window.desktopApi?.correction;
@@ -531,11 +522,10 @@ export function PushToTalkPanel() {
         "devicechange",
         onDeviceChange,
       );
-      const active = activeRef.current;
-      activeRef.current = null;
-      active?.abortController.abort();
-      active?.transcription.cancel();
-      void active?.capture?.stop();
+      const capture = captureRef.current;
+      captureRef.current = null;
+      void capture?.stop();
+      holdPipelineRef.current?.cancel();
       correctionPipelineRef.current?.cancel();
       relayRef.current?.cancel();
     };
@@ -551,14 +541,14 @@ export function PushToTalkPanel() {
         return;
       }
       event.preventDefault();
-      void startPhrase();
+      void beginHold();
     };
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code !== "Space" || isEditableTarget(event.target)) return;
       event.preventDefault();
-      void finishPhrase();
+      void endHold();
     };
-    const onBlur = () => void finishPhrase();
+    const onBlur = () => void endHold();
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -568,37 +558,18 @@ export function PushToTalkPanel() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [finishPhrase, startPhrase]);
+  }, [beginHold, endHold]);
 
   useEffect(() => {
     if (
-      activeRef.current &&
+      holdPipelineRef.current?.snapshot().holding &&
       selectedDeviceId &&
       !devices.some((device) => device.deviceId === selectedDeviceId)
     ) {
-      cancelPhrase();
-      setDeviceMessage("The active microphone disappeared. Phrase cancelled.");
+      cancelHold();
+      setDeviceMessage("The active microphone disappeared. Hold cancelled.");
     }
-  }, [cancelPhrase, devices, selectedDeviceId]);
-
-  useEffect(() => {
-    if (
-      transcript.stage !== "final" ||
-      !transcript.phraseId ||
-      !transcript.finalText
-    ) {
-      return;
-    }
-
-    void correctionPipelineRef.current?.submit(
-      transcript.phraseId,
-      transcript.finalText,
-    );
-  }, [transcript.finalText, transcript.phraseId, transcript.stage]);
-
-  useEffect(() => {
-    void relayRef.current?.submit(correction);
-  }, [correction]);
+  }, [cancelHold, devices, selectedDeviceId]);
 
   const selectDevice = (deviceId: string) => {
     setSelectedDeviceId(deviceId);
@@ -612,11 +583,11 @@ export function PushToTalkPanel() {
       : transcript.partialText ||
         (transcript.stage === "empty"
           ? "No speech was detected in this phrase."
-          : "Hold Space or the button, then speak.");
-  const isCapturing = transcript.stage === "capturing";
+          : "Hold Space or the button, then keep talking.");
   const isFinalizing = transcript.stage === "finalizing";
   const isCorrecting = correction.phase === "correcting";
   const isRelaying = isRelayPlaybackBusy(relay);
+  const isBusy = holding || isFinalizing || isCorrecting || isRelaying;
   const correctionResult = correction.result;
   const correctionProviderMessage = providerStatusFailed
     ? "Correction provider status is unavailable. Unsafe output still falls back to the original."
@@ -640,12 +611,12 @@ export function PushToTalkPanel() {
             <small>05 · EPIC 2 + 3 + 4 RELAY</small>
             <h2 id="stt-heading">Microphone to corrected speech</h2>
             <p>
-              Audio capture stays local. Final text may go to the correction
-              provider, then safe speech streams to the saved virtual output.
+              Audio capture stays local. Every sentence you finish while holding
+              is corrected and spoken, so the voice starts before the key is up.
             </p>
           </div>
           <span className={`stt-stage stt-stage-${transcript.stage}`}>
-            {stageLabel(transcript.stage)}
+            {holdStageLabel(transcript, holding)}
           </span>
         </header>
 
@@ -654,9 +625,7 @@ export function PushToTalkPanel() {
             <span>Physical microphone</span>
             <select
               value={selectedDeviceId}
-              disabled={
-                isCapturing || isFinalizing || isCorrecting || isRelaying
-              }
+              disabled={isBusy}
               onChange={(event) => selectDevice(event.target.value)}
             >
               <option value="">Select microphone</option>
@@ -670,7 +639,7 @@ export function PushToTalkPanel() {
           <button
             type="button"
             className="stt-secondary-button"
-            disabled={isCapturing || isFinalizing || isCorrecting || isRelaying}
+            disabled={isBusy}
             onClick={() => void loadDevices(true)}
           >
             Grant access and refresh
@@ -705,6 +674,8 @@ export function PushToTalkPanel() {
               Speech end to final:{" "}
               {latency === null ? "Pending" : `${latency} ms`}
             </span>
+            <span>Spoken this hold: {spokenPhrases}</span>
+            <span>Queue: {congested ? "Behind" : "Keeping up"}</span>
           </div>
         </div>
 
@@ -725,9 +696,7 @@ export function PushToTalkPanel() {
             <input
               type="checkbox"
               checked={correctionEnabled}
-              disabled={
-                isCapturing || isFinalizing || isCorrecting || isRelaying
-              }
+              disabled={isBusy}
               onChange={(event) => {
                 correctionPipelineRef.current?.setEnabled(event.target.checked);
                 setCorrectionEnabled(event.target.checked);
@@ -803,31 +772,27 @@ export function PushToTalkPanel() {
         <div className="stt-actions">
           <button
             type="button"
-            className={`stt-talk-button ${isCapturing ? "is-active" : ""}`}
-            disabled={
-              !selectedDeviceId || isFinalizing || isCorrecting || isRelaying
-            }
+            className={`stt-talk-button ${holding ? "is-active" : ""}`}
+            disabled={!selectedDeviceId}
             onPointerDown={(event) => {
               event.preventDefault();
               event.currentTarget.setPointerCapture(event.pointerId);
-              void startPhrase();
+              void beginHold();
             }}
             onPointerUp={(event) => {
               event.preventDefault();
-              void finishPhrase();
+              void endHold();
             }}
-            onPointerCancel={cancelPhrase}
+            onPointerCancel={cancelHold}
           >
-            {isCapturing ? "Release to finalize" : "Hold to talk"}
+            {holding ? "Keep talking, release when done" : "Hold to talk"}
             <small>Space</small>
           </button>
           <button
             type="button"
             className="stt-cancel-button"
-            disabled={
-              !isCapturing && !isFinalizing && !isCorrecting && !isRelaying
-            }
-            onClick={cancelPhrase}
+            disabled={!isBusy}
+            onClick={cancelHold}
           >
             Cancel phrase
           </button>
