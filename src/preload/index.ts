@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { DesktopApi, MicrophonePermissionStatus } from "../shared/audio";
 import {
+  CORRECTION_IPC,
+  type CorrectionBridgeResponse,
+  type CorrectionProviderStatus,
+} from "../shared/correction";
+import {
   TTS_IPC,
   type TtsBridgeEvent,
   type TtsProviderStatus,
@@ -31,6 +36,17 @@ const desktopApi: DesktopApi = {
       ipcRenderer.on(TTS_IPC.event, handleEvent);
       return () => ipcRenderer.removeListener(TTS_IPC.event, handleEvent);
     },
+  },
+  correction: {
+    getStatus: () =>
+      ipcRenderer.invoke(
+        CORRECTION_IPC.status,
+      ) as Promise<CorrectionProviderStatus>,
+    correct: (request) =>
+      ipcRenderer.invoke(
+        CORRECTION_IPC.correct,
+        request,
+      ) as Promise<CorrectionBridgeResponse>,
   },
 };
 

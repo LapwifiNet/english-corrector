@@ -1,3 +1,4 @@
+import type { CorrectionBridge } from "./correction";
 import type { TtsBridge } from "./tts";
 
 export type MicrophonePermissionStatus =
@@ -14,4 +15,5 @@ export type DesktopApi = {
     request: () => Promise<boolean>;
   };
   tts: TtsBridge;
+  correction: CorrectionBridge;
 };
