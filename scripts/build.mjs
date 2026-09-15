@@ -87,6 +87,10 @@ await Promise.all([
     resolve(root, "src/renderer/pushToTalk.css"),
     resolve(root, "dist/renderer/pushToTalk.css"),
   ),
+  copyFile(
+    resolve(root, "src/renderer/diagnosticsPanel.css"),
+    resolve(root, "dist/renderer/diagnosticsPanel.css"),
+  ),
 ]);
 
 await writeFile(

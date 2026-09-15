@@ -10,6 +10,11 @@ import {
   type CorrectionProviderStatus,
 } from "../shared/correction";
 import {
+  DIAGNOSTIC_IPC,
+  type DiagnosticPreviewResponse,
+  type DiagnosticSaveResponse,
+} from "../shared/diagnostics";
+import {
   STT_IPC,
   type SttBridgeEvent,
   type SttProviderStatus,
@@ -70,6 +75,18 @@ const desktopApi: DesktopApi = {
         CORRECTION_IPC.correct,
         request,
       ) as Promise<CorrectionBridgeResponse>,
+  },
+  diagnostics: {
+    preview: (request) =>
+      ipcRenderer.invoke(
+        DIAGNOSTIC_IPC.preview,
+        request,
+      ) as Promise<DiagnosticPreviewResponse>,
+    save: (previewId) =>
+      ipcRenderer.invoke(
+        DIAGNOSTIC_IPC.save,
+        previewId,
+      ) as Promise<DiagnosticSaveResponse>,
   },
 };
 

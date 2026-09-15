@@ -1,4 +1,5 @@
 import type { CorrectionBridge } from "./correction";
+import type { DiagnosticBridge } from "./diagnostics";
 import type { SttBridge } from "./stt";
 import type { TtsBridge } from "./tts";
 
@@ -25,4 +26,5 @@ export type DesktopApi = {
   stt: SttBridge;
   tts: TtsBridge;
   correction: CorrectionBridge;
+  diagnostics: DiagnosticBridge;
 };

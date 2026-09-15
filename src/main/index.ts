@@ -8,6 +8,7 @@ import {
 import { join } from "node:path";
 import { AUDIO_IPC, type MicrophonePermissionStatus } from "../shared/audio";
 import { registerCorrectionIpc } from "./correctionIpc";
+import { registerDiagnosticIpc } from "./diagnosticIpc";
 import { createPrivacyLogger, type PrivacyLogOutcome } from "./privacyLogger";
 import { registerSttIpc } from "./sttIpc";
 import { registerTtsIpc } from "./ttsIpc";
@@ -222,6 +223,7 @@ app.whenReady().then(() => {
     code: "app_ready",
   });
   registerAudioIpc();
+  registerDiagnosticIpc(privacyLogger);
   registerSttIpc();
   registerTtsIpc();
   registerCorrectionIpc();

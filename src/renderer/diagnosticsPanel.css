@@ -1,0 +1,142 @@
+.diagnostics-panel {
+  width: min(1120px, calc(100% - 48px));
+  margin: 24px auto 32px;
+  padding: 28px;
+  border: 1px solid #d9d5cf;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgb(58 50 43 / 8%);
+}
+
+.diagnostics-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.diagnostics-heading h2 {
+  margin: 4px 0 8px;
+}
+
+.diagnostics-heading p:last-child {
+  max-width: 720px;
+  margin: 0;
+  color: #625d57;
+  line-height: 1.55;
+}
+
+.diagnostics-local-badge {
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: #e9f4ec;
+  color: #28633b;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diagnostics-exclusions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f7f5f2;
+}
+
+.diagnostics-exclusions strong {
+  margin-right: 4px;
+  color: #37322e;
+}
+
+.diagnostics-exclusions span {
+  padding: 5px 9px;
+  border: 1px solid #ded9d2;
+  border-radius: 999px;
+  background: #fff;
+  color: #635d57;
+  font-size: 0.82rem;
+}
+
+.diagnostics-notice,
+.diagnostics-status {
+  margin: 16px 0 0;
+  color: #655f59;
+  line-height: 1.5;
+}
+
+.diagnostics-status.state-failed,
+.diagnostics-status.state-expired {
+  color: #a13d32;
+}
+
+.diagnostics-status.state-saved {
+  color: #28633b;
+  font-weight: 650;
+}
+
+.diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.diagnostics-preview {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #d9d5cf;
+  border-radius: 18px;
+  background: #171a1d;
+}
+
+.diagnostics-preview > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border-bottom: 1px solid #30353a;
+  color: #f4f2ef;
+}
+
+.diagnostics-preview small {
+  color: #b9c0c5;
+}
+
+.diagnostics-preview pre {
+  max-height: 380px;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  color: #d8f6df;
+  font:
+    0.8rem/1.55 "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  white-space: pre;
+}
+
+@media (max-width: 720px) {
+  .diagnostics-panel {
+    width: min(100% - 32px, 1120px);
+    padding: 22px;
+    border-radius: 20px;
+  }
+
+  .diagnostics-heading,
+  .diagnostics-preview > div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .diagnostics-actions button {
+    width: 100%;
+  }
+}
