@@ -41,6 +41,7 @@ export const PRIVACY_LOG_OUTCOMES = [
   "denied",
   "restricted",
   "unsupported",
+  "not_determined",
   "missing",
   "unknown",
 ] as const;
@@ -57,6 +58,8 @@ export const PRIVACY_LOG_CODES = [
   "app_ready",
   "window_load_failed",
   "settings_open_failed",
+  "permission_check_failed",
+  "permission_request_failed",
   "permission_denied",
   "permission_restricted",
   "permission_unsupported",
